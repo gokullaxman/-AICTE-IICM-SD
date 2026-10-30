@@ -46,10 +46,14 @@ def create_jwt_token(payload: Dict[str, Any], expires_hours: Optional[int] = Non
 
 def decode_jwt_token(token: str) -> Dict[str, Any]:
     try:
-        parts = token.split(".")
+        if not token or not isinstance(token, str):
+            raise ValueError("Token must be a non-empty string")
+        parts = token.strip().split(".")
         if len(parts) != 3:
             raise ValueError("Invalid token format")
         h_b64, b_b64, s_b64 = parts
+        if not h_b64 or not b_b64 or not s_b64:
+            raise ValueError("Invalid token format")
         signing_input = f"{h_b64}.{b_b64}".encode("ascii")
         expected_sig = hmac.new(settings.JWT_SECRET.encode("utf-8"), signing_input, hashlib.sha256).digest()
         actual_sig = _b64url_decode(s_b64)
@@ -68,20 +72,38 @@ def decode_jwt_token(token: str) -> Dict[str, Any]:
         )
 
 def get_current_user(authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
-    if not authorization or not authorization.lower().startswith("bearer "):
+    if not authorization or not authorization.strip():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid Authorization Bearer token",
+            detail="Missing Authorization header",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = authorization.split(" ", 1)[1].strip()
+    auth_clean = authorization.strip()
+    if not auth_clean.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Authorization header scheme. Expected 'Bearer <token>'",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = auth_clean[7:].strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Bearer access token in Authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return decode_jwt_token(token)
 
 def get_optional_current_user(authorization: Optional[str] = Header(default=None)) -> Optional[Dict[str, Any]]:
-    if not authorization or not authorization.lower().startswith("bearer "):
+    if not authorization or not authorization.strip():
+        return None
+    auth_clean = authorization.strip()
+    if not auth_clean.lower().startswith("bearer "):
+        return None
+    token = auth_clean[7:].strip()
+    if not token:
         return None
     try:
-        token = authorization.split(" ", 1)[1].strip()
         return decode_jwt_token(token)
     except Exception:
         return None

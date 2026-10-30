@@ -2625,7 +2625,74 @@
     // =========================================================================
     let apiBaseUrl = 'http://localhost:8000/api/v1';
     let backendConnected = false;
-    let jwtToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aicte_hq_session';
+    let jwtToken = null;
+
+    function isValidJwtFormat(token) {
+      if (!token || typeof token !== 'string') return false;
+      const trimmed = token.trim();
+      if (!trimmed) return false;
+      const parts = trimmed.split('.');
+      return parts.length === 3 && parts.every(p => p.length > 0);
+    }
+
+    function getAuthToken() {
+      if (isValidJwtFormat(jwtToken)) return jwtToken.trim();
+      try {
+        const saved = sessionStorage.getItem('aicte_jwt_token');
+        if (isValidJwtFormat(saved)) {
+          jwtToken = saved.trim();
+          return jwtToken;
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    async function authenticateOfficerSession(email, password) {
+      const em = (email || '').trim().toLowerCase();
+      const pw = password || '';
+      if (!em || !pw) {
+        return { success: false, error: 'Email and password are required.' };
+      }
+      try {
+        const res = await fetch(`${apiBaseUrl}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: em, password: pw })
+        });
+        if (!res.ok) {
+          let detail = 'Invalid official AICTE credentials.';
+          try {
+            const errJson = await res.json();
+            detail = errJson.detail || detail;
+          } catch (e) {}
+          return { success: false, error: detail };
+        }
+        const data = await res.json();
+        const token = data.access_token;
+        if (!isValidJwtFormat(token)) {
+          return { success: false, error: 'Server returned an invalid token format.' };
+        }
+        jwtToken = token;
+        try { sessionStorage.setItem('aicte_jwt_token', token); } catch (e) {}
+        if (data.officer) {
+          const off = data.officer;
+          currentOfficer = {
+            user_id: off.sub || off.user_id,
+            email: off.email,
+            full_name: off.full_name || currentOfficer.full_name,
+            designation: off.designation || currentOfficer.designation,
+            bureau_code: off.bureau_code || currentOfficer.bureau_code,
+            role: off.role || currentOfficer.role,
+            region_scope: off.region_scope || currentOfficer.region_scope,
+            pass: pw
+          };
+        }
+        updateOfficerHeaderUI();
+        return { success: true, token, officer: currentOfficer };
+      } catch (err) {
+        return { success: false, error: 'Unable to reach backend authentication service.' };
+      }
+    }
     let currentOfficer = DEMO_OFFICERS[0];
 
     let activeTab = 'dashboard';
@@ -2654,6 +2721,11 @@
           backendConnected = true;
           dot.className = 'w-2 h-2 rounded-full bg-emerald-400';
           txt.textContent = 'FastAPI + Relational DB: Connected';
+
+          // Authenticate active officer session if not already tokenized
+          if (!getAuthToken() && currentOfficer && currentOfficer.email && currentOfficer.pass) {
+            await authenticateOfficerSession(currentOfficer.email, currentOfficer.pass);
+          }
           const [instRes, caseRes, riskRes, dispRes, auditRes] = await Promise.all([
             fetch(`${apiBaseUrl}/institutions/?page_size=100`),
             fetch(`${apiBaseUrl}/cases/?page_size=100`),
@@ -4462,17 +4534,64 @@
       }
     }
 
-    function showAiChatError(message, retryPrompt) {
+    function showAiChatError(message, retryPrompt, isAuthError = false) {
       aiLastFailedPrompt = retryPrompt;
       const banner = document.getElementById('aiChatErrorBanner');
       const msgEl = document.getElementById('aiChatErrorMessage');
+      const retryBtn = document.getElementById('btnAiChatRetry');
       if (banner && msgEl) {
         msgEl.textContent = message;
         banner.classList.remove('hidden');
+        if (retryBtn) {
+          if (isAuthError) {
+            retryBtn.textContent = 'Sign In';
+            retryBtn.onclick = () => openLoginModal();
+          } else {
+            retryBtn.textContent = 'Retry';
+            retryBtn.onclick = () => {
+              if (aiLastFailedPrompt && !aiChatPending) sendChatMessage(aiLastFailedPrompt, true);
+            };
+          }
+        }
       }
     }
 
-    async function sendChatMessage(promptText) {
+    function showAiChatAuthNotice(promptText) {
+      aiLastFailedPrompt = promptText;
+      const msgsArea = document.getElementById('aiChatMessagesArea');
+      const inputEl = document.getElementById('aiChatInput');
+      if (inputEl && !inputEl.value && promptText) {
+        inputEl.value = promptText;
+        const charCountEl = document.getElementById('aiChatCharCount');
+        if (charCountEl) charCountEl.textContent = `${promptText.length} / 2000`;
+      }
+
+      const noticeBubble = document.createElement('div');
+      noticeBubble.className = 'flex items-start gap-2.5';
+      noticeBubble.innerHTML = `
+        <div class="w-6 h-6 rounded-full bg-amber-500 text-white flex items-center justify-center shrink-0 text-[10px] font-bold mt-0.5">!</div>
+        <div class="bg-amber-50 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200 rounded-2xl rounded-tl-xs px-3.5 py-2.5 max-w-[88%] border border-amber-200 dark:border-amber-800 shadow-2xs text-xs space-y-1.5">
+          <div class="font-semibold text-amber-900 dark:text-amber-100 flex items-center gap-1.5">
+            <svg class="w-4 h-4 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+            Officer Authentication Required
+          </div>
+          <p class="text-xs text-amber-800 dark:text-amber-300">You must be signed in with a valid AICTE officer session to communicate with the IICM Assistant.</p>
+          <div class="pt-1">
+            <button type="button" class="btn-chat-signin px-3 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white font-semibold text-[11px] transition shadow-xs">
+              Sign In as Officer
+            </button>
+          </div>
+        </div>
+      `;
+      msgsArea.appendChild(noticeBubble);
+      msgsArea.scrollTop = msgsArea.scrollHeight;
+
+      noticeBubble.querySelector('.btn-chat-signin').onclick = () => {
+        openLoginModal();
+      };
+    }
+
+    async function sendChatMessage(promptText, isRetry = false) {
       const text = (promptText || '').trim();
       if (!text || aiChatPending) return;
 
@@ -4481,28 +4600,50 @@
       const sendBtn = document.getElementById('btnAiChatSend');
       const errorBanner = document.getElementById('aiChatErrorBanner');
 
+      // 1. Verify token before network transmission
+      const token = getAuthToken();
+      if (!token) {
+        showAiChatAuthNotice(text);
+        return;
+      }
+
       if (errorBanner) errorBanner.classList.add('hidden');
       aiLastFailedPrompt = null;
       aiChatPending = true;
-      if (sendBtn) sendBtn.disabled = true;
+      if (sendBtn) {
+        sendBtn.disabled = true;
+        sendBtn.setAttribute('aria-disabled', 'true');
+      }
       if (inputEl) {
+        inputEl.disabled = true;
         inputEl.value = '';
         inputEl.style.height = 'auto';
         const charCountEl = document.getElementById('aiChatCharCount');
         if (charCountEl) charCountEl.textContent = '0 / 2000';
       }
 
-      // 1. Render User Message Bubble
-      const userBubble = document.createElement('div');
-      userBubble.className = 'flex items-start justify-end gap-2.5';
-      userBubble.innerHTML = `
-        <div class="bg-blue-600 text-white rounded-2xl rounded-tr-xs px-3.5 py-2.5 max-w-[85%] shadow-2xs text-xs whitespace-pre-wrap">${sanitizeChatHtml(text)}</div>
-        <div class="w-6 h-6 rounded-full bg-slate-900 text-white flex items-center justify-center shrink-0 text-[10px] font-bold mt-0.5">U</div>
-      `;
-      msgsArea.appendChild(userBubble);
-      msgsArea.scrollTop = msgsArea.scrollHeight;
+      // 2. Render User Message Bubble (avoid duplicate identical bubble on retry)
+      let shouldAppendUserBubble = true;
+      if (isRetry) {
+        const lastUserBubble = msgsArea.querySelector('.ai-user-bubble:last-child');
+        if (lastUserBubble && lastUserBubble.getAttribute('data-prompt') === text) {
+          shouldAppendUserBubble = false;
+        }
+      }
 
-      // 2. Render Typing Indicator
+      if (shouldAppendUserBubble) {
+        const userBubble = document.createElement('div');
+        userBubble.className = 'ai-user-bubble flex items-start justify-end gap-2.5';
+        userBubble.setAttribute('data-prompt', text);
+        userBubble.innerHTML = `
+          <div class="bg-blue-600 text-white rounded-2xl rounded-tr-xs px-3.5 py-2.5 max-w-[85%] shadow-2xs text-xs whitespace-pre-wrap">${sanitizeChatHtml(text)}</div>
+          <div class="w-6 h-6 rounded-full bg-slate-900 text-white flex items-center justify-center shrink-0 text-[10px] font-bold mt-0.5">U</div>
+        `;
+        msgsArea.appendChild(userBubble);
+        msgsArea.scrollTop = msgsArea.scrollHeight;
+      }
+
+      // 3. Render Typing Indicator
       const typingIndicator = document.createElement('div');
       typingIndicator.id = 'aiChatTypingIndicator';
       typingIndicator.className = 'flex items-start gap-2.5';
@@ -4518,7 +4659,7 @@
       msgsArea.appendChild(typingIndicator);
       msgsArea.scrollTop = msgsArea.scrollHeight;
 
-      // 3. Dispatch to backend API
+      // 4. Dispatch to backend API
       try {
         const payload = {
           message: text,
@@ -4526,18 +4667,15 @@
           conversation_id: 'conv-' + (currentOfficer ? currentOfficer.user_id : 'hq')
         };
 
-        const headers = { 'Content-Type': 'application/json' };
-        if (jwtToken) {
-          headers['Authorization'] = `Bearer ${jwtToken}`;
-        }
-
         const res = await fetch(`${apiBaseUrl}/chat/message`, {
           method: 'POST',
-          headers: headers,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
           body: JSON.stringify(payload)
         });
 
-        // Remove typing indicator
         const ti = document.getElementById('aiChatTypingIndicator');
         if (ti) ti.remove();
 
@@ -4548,7 +4686,21 @@
             errMsg = errJson.detail || errMsg;
           } catch (e) {}
 
-          showAiChatError(errMsg, text);
+          // Preserve message text in input so user does not lose input
+          if (inputEl && !inputEl.value) {
+            inputEl.value = text;
+            const charCountEl = document.getElementById('aiChatCharCount');
+            if (charCountEl) charCountEl.textContent = `${text.length} / 2000`;
+          }
+
+          if (res.status === 401) {
+            // Authentication expired or invalid: clear invalid token and show sign-in notice
+            jwtToken = null;
+            try { sessionStorage.removeItem('aicte_jwt_token'); } catch (e) {}
+            showAiChatAuthNotice(text);
+          } else {
+            showAiChatError(errMsg, text, false);
+          }
           return;
         }
 
@@ -4580,16 +4732,29 @@
       } catch (err) {
         const ti = document.getElementById('aiChatTypingIndicator');
         if (ti) ti.remove();
-        showAiChatError('Network connection failure. Unable to reach AI service.', text);
+        if (inputEl && !inputEl.value) {
+          inputEl.value = text;
+          const charCountEl = document.getElementById('aiChatCharCount');
+          if (charCountEl) charCountEl.textContent = `${text.length} / 2000`;
+        }
+        showAiChatError('Network connection failure. Unable to reach AI service.', text, false);
       } finally {
         aiChatPending = false;
-        if (sendBtn) sendBtn.disabled = false;
+        if (sendBtn) {
+          sendBtn.disabled = false;
+          sendBtn.removeAttribute('aria-disabled');
+        }
+        if (inputEl) {
+          inputEl.disabled = false;
+          inputEl.focus();
+        }
       }
     }
 
     function bindChatQuickPrompts() {
       document.querySelectorAll('.chat-quick-prompt').forEach(btn => {
         btn.onclick = () => {
+          if (aiChatPending) return;
           sendChatMessage(btn.textContent.trim());
         };
       });
@@ -4635,19 +4800,17 @@
         const pass = document.getElementById('loginPasswordInput').value;
         apiBaseUrl = document.getElementById('apiBaseUrlInput').value.trim();
 
-        const matched = DEMO_OFFICERS.find(u => u.email.toLowerCase() === email && u.pass === pass);
-        if (!matched) {
-          showToast('Authentication Failed', 'Invalid official AICTE email or password.', 'danger');
+        const authRes = await authenticateOfficerSession(email, pass);
+        if (!authRes.success) {
+          showToast('Authentication Failed', authRes.error, 'danger');
           return;
         }
-        currentOfficer = matched;
-        jwtToken = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${btoa(JSON.stringify({ sub: matched.user_id, email: matched.email, role: matched.role, bureau: matched.bureau_code }))}`;
-        recordAuditLog('AUTH_LOGIN', matched.user_id, `Issued HS256 JWT token for ${matched.full_name} (${matched.bureau_code})`);
-        updateOfficerHeaderUI();
+
+        recordAuditLog('AUTH_LOGIN', currentOfficer.user_id, `Issued HS256 JWT token for ${currentOfficer.full_name} (${currentOfficer.bureau_code})`);
         document.getElementById('modalJwtLogin').classList.add('hidden');
         await probeAndSyncBackend();
         switchTab(activeTab);
-        showToast('JWT Session Authenticated', `Signed in as ${matched.full_name} (${matched.bureau_code}).`, 'success');
+        showToast('JWT Session Authenticated', `Signed in as ${currentOfficer.full_name} (${currentOfficer.bureau_code}).`, 'success');
       });
 
       document.getElementById('btnOpenManualLinkModal').addEventListener('click', openManualLinkModal);
@@ -4972,19 +5135,19 @@
 
       // IICM AI Assistant Chatbot Listeners
       const toggleChatBtn = document.getElementById('btnToggleAiChat');
-      if (toggleChatBtn) toggleChatBtn.addEventListener('click', () => toggleAiChatPanel());
+      if (toggleChatBtn) toggleChatBtn.onclick = () => toggleAiChatPanel();
 
       const closeChatBtn = document.getElementById('btnAiChatClose');
-      if (closeChatBtn) closeChatBtn.addEventListener('click', () => toggleAiChatPanel(false));
+      if (closeChatBtn) closeChatBtn.onclick = () => toggleAiChatPanel(false);
 
       const clearChatBtn = document.getElementById('btnAiChatClear');
-      if (clearChatBtn) clearChatBtn.addEventListener('click', clearAiChatConversation);
+      if (clearChatBtn) clearChatBtn.onclick = clearAiChatConversation;
 
       const retryChatBtn = document.getElementById('btnAiChatRetry');
       if (retryChatBtn) {
-        retryChatBtn.addEventListener('click', () => {
-          if (aiLastFailedPrompt) sendChatMessage(aiLastFailedPrompt);
-        });
+        retryChatBtn.onclick = () => {
+          if (aiLastFailedPrompt && !aiChatPending) sendChatMessage(aiLastFailedPrompt, true);
+        };
       }
 
       const chatForm = document.getElementById('aiChatForm');
@@ -4998,10 +5161,14 @@
           chatInput.style.height = Math.min(96, chatInput.scrollHeight) + 'px';
         });
 
+        // Enter key safely dispatches single form submit without duplicate sending
         chatInput.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            sendChatMessage(chatInput.value);
+            if (aiChatPending) return;
+            if (chatForm) {
+              chatForm.dispatchEvent(new Event('submit', { cancelable: true }));
+            }
           }
         });
       }
@@ -5009,7 +5176,11 @@
       if (chatForm) {
         chatForm.addEventListener('submit', (e) => {
           e.preventDefault();
-          if (chatInput) sendChatMessage(chatInput.value);
+          if (aiChatPending) return;
+          const prompt = (chatInput ? chatInput.value : '').trim();
+          if (prompt) {
+            sendChatMessage(prompt);
+          }
         });
       }
 
