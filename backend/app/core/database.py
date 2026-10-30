@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -111,9 +112,170 @@ class RelationalDatabase:
         # Check if already seeded
         existing = self.fetch_one("SELECT COUNT(*) AS cnt FROM bureaus")
         if existing and existing.get("cnt", 0) > 0:
+            self._apply_schema_updates()
             return
 
         self._seed_reference_data()
+        self._apply_schema_updates()
+
+    def _apply_schema_updates(self) -> None:
+        # 1. Create notification_dispatches table if missing
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS notification_dispatches (
+                dispatch_id VARCHAR(64) PRIMARY KEY,
+                alert_id VARCHAR(64),
+                case_id VARCHAR(64),
+                channel VARCHAR(16) NOT NULL,
+                recipient VARCHAR(128) NOT NULL,
+                destination VARCHAR(128) NOT NULL,
+                subject VARCHAR(255) NOT NULL,
+                message_body TEXT NOT NULL,
+                dispatched_at VARCHAR(32) NOT NULL,
+                delivery_status VARCHAR(32) NOT NULL
+            )
+        """)
+
+        # 2. Check and add columns for institutions
+        inst_cols = [r["name"] if "name" in r else r["column_name"] for r in (
+            self.fetch_all("PRAGMA table_info(institutions)") if not self.is_postgres else
+            self.fetch_all("SELECT column_name FROM information_schema.columns WHERE table_name = 'institutions'")
+        )]
+        if "lead_bureau" not in inst_cols:
+            self.execute("ALTER TABLE institutions ADD COLUMN lead_bureau VARCHAR(16)")
+        if "action_hold" not in inst_cols:
+            self.execute("ALTER TABLE institutions ADD COLUMN action_hold INTEGER DEFAULT 0")
+        if "risk_score" not in inst_cols:
+            self.execute("ALTER TABLE institutions ADD COLUMN risk_score REAL DEFAULT 0.0")
+        if "risk_tier" not in inst_cols:
+            self.execute("ALTER TABLE institutions ADD COLUMN risk_tier VARCHAR(16) DEFAULT 'LOW'")
+
+        # 3. Check and add columns for complaint_cases
+        case_cols = [r["name"] if "name" in r else r["column_name"] for r in (
+            self.fetch_all("PRAGMA table_info(complaint_cases)") if not self.is_postgres else
+            self.fetch_all("SELECT column_name FROM information_schema.columns WHERE table_name = 'complaint_cases'")
+        )]
+        if "escalation_level" not in case_cols:
+            self.execute("ALTER TABLE complaint_cases ADD COLUMN escalation_level INTEGER DEFAULT 0")
+        if "escalation_status" not in case_cols:
+            self.execute("ALTER TABLE complaint_cases ADD COLUMN escalation_status VARCHAR(32) DEFAULT 'NORMAL'")
+        if "last_escalated_at" not in case_cols:
+            self.execute("ALTER TABLE complaint_cases ADD COLUMN last_escalated_at VARCHAR(32)")
+        if "complainant_phone" not in case_cols:
+            self.execute("ALTER TABLE complaint_cases ADD COLUMN complainant_phone VARCHAR(64)")
+        if "complainant_email" not in case_cols:
+            self.execute("ALTER TABLE complaint_cases ADD COLUMN complainant_email VARCHAR(128)")
+        if "external_ref_id" not in case_cols:
+            self.execute("ALTER TABLE complaint_cases ADD COLUMN external_ref_id VARCHAR(64)")
+        if "source_portal" not in case_cols:
+            self.execute("ALTER TABLE complaint_cases ADD COLUMN source_portal VARCHAR(64) DEFAULT 'MANUAL'")
+        if "language" not in case_cols:
+            self.execute("ALTER TABLE complaint_cases ADD COLUMN language VARCHAR(16) DEFAULT 'en'")
+        if "action_hold" not in case_cols:
+            self.execute("ALTER TABLE complaint_cases ADD COLUMN action_hold INTEGER DEFAULT 0")
+
+        # 4. Check and add columns for audit_logs
+        audit_cols = [r["name"] if "name" in r else r["column_name"] for r in (
+            self.fetch_all("PRAGMA table_info(audit_logs)") if not self.is_postgres else
+            self.fetch_all("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_logs'")
+        )]
+        if "prev_hash" not in audit_cols:
+            self.execute("ALTER TABLE audit_logs ADD COLUMN prev_hash VARCHAR(64)")
+        if "entry_hash" not in audit_cols:
+            self.execute("ALTER TABLE audit_logs ADD COLUMN entry_hash VARCHAR(64)")
+
+        # 5. Ensure cryptographic audit hash chain integrity
+        self._ensure_audit_hash_chain()
+
+    def _compute_audit_hash(self, prev_hash: str, timestamp: str, actor_email: str, actor_role: str, actor_bureau: str, event_type: str, target_entity: str, details: str) -> str:
+        payload = f"{prev_hash}|{timestamp}|{actor_email}|{actor_role}|{actor_bureau}|{event_type}|{target_entity}|{details}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _ensure_audit_hash_chain(self) -> None:
+        rows = self.fetch_all("SELECT * FROM audit_logs ORDER BY audit_id ASC")
+        if not rows:
+            return
+        last_hash = "0" * 64
+        for r in rows:
+            if not r.get("entry_hash") or not r.get("prev_hash"):
+                h = self._compute_audit_hash(
+                    last_hash,
+                    r["timestamp"],
+                    r["actor_email"],
+                    r["actor_role"],
+                    r["actor_bureau"],
+                    r["event_type"],
+                    r["target_entity"],
+                    r["details"]
+                )
+                self.execute(
+                    "UPDATE audit_logs SET prev_hash = ?, entry_hash = ? WHERE audit_id = ?",
+                    (last_hash, h, r["audit_id"])
+                )
+                last_hash = h
+            else:
+                last_hash = r["entry_hash"]
+
+    def log_audit(self, actor_email: str, actor_role: str, actor_bureau: str, event_type: str, target_entity: str, details: str) -> str:
+        latest = self.fetch_one("SELECT entry_hash FROM audit_logs ORDER BY audit_id DESC LIMIT 1")
+        prev_hash = latest["entry_hash"] if latest and latest.get("entry_hash") else ("0" * 64)
+        ts = timestamp_str(0, now_ist().hour, now_ist().minute)
+        entry_hash = self._compute_audit_hash(prev_hash, ts, actor_email, actor_role, actor_bureau, event_type, target_entity, details)
+        self.execute(
+            """INSERT INTO audit_logs (timestamp, actor_email, actor_role, actor_bureau, event_type, target_entity, details, prev_hash, entry_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ts, actor_email, actor_role, actor_bureau, event_type, target_entity, details, prev_hash, entry_hash)
+        )
+        return entry_hash
+
+    def verify_audit_chain(self) -> Dict[str, Any]:
+        rows = self.fetch_all("SELECT * FROM audit_logs ORDER BY audit_id ASC")
+        if not rows:
+            return {
+                "valid": True,
+                "count": 0,
+                "chain_head": "0" * 64,
+                "status": "EMPTY_CHAIN"
+            }
+        expected_prev = "0" * 64
+        for r in rows:
+            if r.get("prev_hash") != expected_prev:
+                return {
+                    "valid": False,
+                    "count": len(rows),
+                    "chain_head": expected_prev,
+                    "status": "TAMPER_DETECTED_HASH_CHAIN_BROKEN",
+                    "tampered_audit_id": r["audit_id"],
+                    "error": f"Chain link broken at record {r['audit_id']}. Expected prev_hash {expected_prev}, got {r.get('prev_hash')}",
+                    "record": r
+                }
+            recomputed = self._compute_audit_hash(
+                expected_prev,
+                r["timestamp"],
+                r["actor_email"],
+                r["actor_role"],
+                r["actor_bureau"],
+                r["event_type"],
+                r["target_entity"],
+                r["details"]
+            )
+            if recomputed != r.get("entry_hash"):
+                return {
+                    "valid": False,
+                    "count": len(rows),
+                    "chain_head": expected_prev,
+                    "status": "TAMPER_DETECTED_HASH_MISMATCH",
+                    "tampered_audit_id": r["audit_id"],
+                    "error": f"Cryptographic integrity mismatch at record {r['audit_id']}. Data has been altered.",
+                    "record": r
+                }
+            expected_prev = r["entry_hash"]
+
+        return {
+            "valid": True,
+            "count": len(rows),
+            "chain_head": expected_prev,
+            "status": "TAMPER_EVIDENT_CHAIN_VERIFIED"
+        }
 
     def _seed_reference_data(self) -> None:
         # 1. Seed Bureaus
@@ -177,7 +339,7 @@ class RelationalDatabase:
         for st, note, pid in overlap_updates:
             self.execute("UPDATE institutions SET coordination_status = ?, coordination_note = ? WHERE pid = ?", (st, note, pid))
 
-        # 5. Seed Dynamic Relative-Timestamp Complaint Cases (No hardcoded static calendar dates!)
+        # 5. Seed Dynamic Relative-Timestamp Complaint Cases
         cases = [
             # OVERLAP GROUP 1: Velammal Institute of Technology (1-6111471) -> PGRC + RB + AB
             (
@@ -187,7 +349,7 @@ class RelationalDatabase:
                 "Under Process", "PGRC", "Shri V. K. Sharma",
                 f"{today_str(-11)}: Final show-cause reminder issued to Principal for immediate NEFT fee refund to 18 students.",
                 "Verify bank UTR refund receipts or refer to Regulation Bureau for coercive penalty.",
-                today_str(-11), today_str(-15), # 15 days overdue (SLA Breached)
+                today_str(-11), today_str(-15),
                 "Exact PID 1-6111471 + TF-IDF Content Cluster (99.4%)", 99.4
             ),
             (
@@ -219,7 +381,7 @@ class RelationalDatabase:
                 "Escalated", "PGRC", "Shri V. K. Sharma",
                 f"{today_str(-6)}: Escalated to Director (PGRC) due to non-return of original certificates despite 48-hour directive.",
                 "Coordinate with Regulation Bureau inspection team to enforce immediate release of certificates.",
-                today_str(-6), today_str(-13), # SLA for Certificate Withholding is 15d -> 13d overdue!
+                today_str(-6), today_str(-13),
                 "Exact PID 1-5104051 Verified (100.0%)", 100.0
             ),
             (
@@ -229,7 +391,7 @@ class RelationalDatabase:
                 "Under Process", "RB", "Dr. Ananya Nair",
                 f"{today_str(-3)}: Surprise inspection committee constituted by Regulation Bureau.",
                 "Include PGRC-0795 student certificate retention docket in RB Inspection Committee mandate.",
-                today_str(-3), today_str(4), # Approaching SLA (4 days left)
+                today_str(-3), today_str(4),
                 "Acronym & Location Match ('TNCE Coimbatore' -> 1-5104051) (89.5%)", 89.5
             ),
 
@@ -241,7 +403,7 @@ class RelationalDatabase:
                 "Under Process", "RB", "Dr. Ananya Nair",
                 f"{today_str(-8)}: Standing Hearing Committee examined Registrar; payroll verification requested.",
                 "Reconcile Vigilance Cell forensic payroll findings before issuing final speaking order.",
-                today_str(-8), today_str(-8), # 8 days overdue
+                today_str(-8), today_str(-8),
                 "Exact PID 1-3634045571 Verified (100.0%)", 100.0
             ),
             (
@@ -251,7 +413,7 @@ class RelationalDatabase:
                 "Under Process", "VC", "Shri D. P. Singh",
                 f"{today_str(-5)}: Bank scroll and PF challan forensic verification completed; linked with RB-0388.",
                 "Submit joint vigilance report to Regulation Bureau.",
-                today_str(-5), today_str(3), # Approaching SLA (3 days left)
+                today_str(-5), today_str(3),
                 "Alias ('MRIIRS Faridabad') + High Content Similarity (93.2%)", 93.2
             ),
             (
@@ -273,7 +435,7 @@ class RelationalDatabase:
                 "Under Process", "PGRC", "Shri V. K. Sharma",
                 f"{today_str(-2)}: Anti-Ragging Committee CCTV and Proctorial report sought within 48 hours.",
                 "Coordinate with Regional Office (RO) field inspection team visiting Bengaluru campus.",
-                today_str(-2), today_str(2), # 7-day SLA for Ragging -> 2 days remaining!
+                today_str(-2), today_str(2),
                 "Exact PID 1-8141561 Verified (100.0%)", 100.0
             ),
             (
@@ -317,7 +479,7 @@ class RelationalDatabase:
                 "Pending", "PGRC", "Shri V. K. Sharma",
                 f"{today_str(-12)}: Notice served to Registrar; response overdue beyond 15-day SLA.",
                 "Issue SLA breach warning and summon Principal online.",
-                today_str(-12), today_str(-7), # 7 days overdue
+                today_str(-12), today_str(-7),
                 "Exact PID 1-4169394 Verified (100.0%)", 100.0
             ),
             (
@@ -416,7 +578,7 @@ class RelationalDatabase:
             ("AICTE-PGRC-0902", timestamp_str(-22, 11, 10), "INTAKE", None, "PGRC", "Shri V. K. Sharma", "Original migration certificate withholding complaint logged.", "Petition_0902.pdf"),
             ("AICTE-AB-0155", timestamp_str(-28, 15, 20), "STATUS_UPDATE", "AB", "AB", "Shri M. S. Gill", "Compliance verified via geo-tagged photographs; case disposed.", "Disposal_0155.pdf"),
             ("AICTE-PGRC-0688", timestamp_str(-21, 14, 10), "STATUS_UPDATE", "PGRC", "PGRC", "Shri V. K. Sharma", "RTGS fee refund UTR confirmed by student; case disposed.", "UTR_Receipt_0688.pdf"),
-            ("AICTE-RB-0310", timestamp_str(-34, 16, 45), "STATUS_UPDATE", "RB", "RB", "Dr. Ananya Nair", "TFW supernumerary quota seats reconciled with university; case disposed.", "Closure_0310.pdf")
+            ("AICTE-RB-0310", timestamp_str(-62, 16, 45), "STATUS_UPDATE", "RB", "RB", "Dr. Ananya Nair", "TFW supernumerary quota seats reconciled with university; case disposed.", "Closure_0310.pdf")
         ]
         for h in histories:
             self.execute(
@@ -427,7 +589,7 @@ class RelationalDatabase:
                 h
             )
 
-        # 8. Seed Initial Audit Log
+        # 8. Seed Initial Audit Log with Hash Chaining
         self.log_audit(
             actor_email="admin@aicte-india.org",
             actor_role="COMPETENT_AUTHORITY",
@@ -478,12 +640,5 @@ class RelationalDatabase:
                 )
                 imported += 1
         return imported
-
-    def log_audit(self, actor_email: str, actor_role: str, actor_bureau: str, event_type: str, target_entity: str, details: str) -> None:
-        self.execute(
-            """INSERT INTO audit_logs (timestamp, actor_email, actor_role, actor_bureau, event_type, target_entity, details)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (timestamp_str(0, now_ist().hour, now_ist().minute), actor_email, actor_role, actor_bureau, event_type, target_entity, details)
-        )
 
 db = RelationalDatabase()

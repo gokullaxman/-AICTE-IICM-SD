@@ -1,8 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from app.core.database import db, now_ist, timestamp_str
 from app.core.security import get_current_user
+from app.schemas.payloads import NotificationDispatchTriggerRequest
 from app.services.sla_and_alerts import sync_and_fetch_live_alerts
+from app.services.notification_service import (
+    broadcast_alert_notifications,
+    list_dispatches,
+    dispatch_single_notification
+)
 
 router = APIRouter()
 
@@ -27,6 +33,77 @@ def list_live_alerts(alert_type: Optional[str] = None, unacknowledged_only: bool
             }
             for a in alerts
         ]
+    }
+
+# ============================================================================
+# Feature 6: Email & SMS Notification Dispatches
+# ============================================================================
+
+@router.get("/dispatches")
+def list_notification_dispatches(
+    case_id: Optional[str] = None,
+    channel: Optional[str] = None,
+    delivery_status: Optional[str] = None,
+    limit: int = 50
+):
+    """Fetches the relational dispatch log of all multi-channel (SMS & Email) officer notifications."""
+    dispatches = list_dispatches(case_id=case_id, channel=channel, delivery_status=delivery_status, limit=limit)
+    return {
+        "count": len(dispatches),
+        "items": dispatches
+    }
+
+@router.post("/{alert_id}/dispatch")
+def trigger_alert_dispatch(
+    alert_id: str,
+    payload: Optional[NotificationDispatchTriggerRequest] = None,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Forces immediate multi-channel (Official Email & CDAC/NIC SMS) broadcast for a specific alert."""
+    alert = db.fetch_one("SELECT * FROM alerts WHERE alert_id = ?", (alert_id.strip(),))
+    if not alert:
+        raise HTTPException(status_code=404, detail=f"Alert '{alert_id}' not found")
+
+    dispatches = broadcast_alert_notifications(alert)
+    db.log_audit(
+        actor_email=current_user["email"],
+        actor_role=current_user["role"],
+        actor_bureau=current_user["bureau_code"],
+        event_type="ALERT_MANUAL_DISPATCH",
+        target_entity=alert_id.strip(),
+        details=f"Dispatched {len(dispatches)} multi-channel alerts (SMS/Email) for {alert_id}."
+    )
+    return {
+        "status": "DISPATCHED",
+        "alert_id": alert_id.strip(),
+        "dispatches_count": len(dispatches),
+        "dispatches": dispatches
+    }
+
+@router.post("/broadcast-all")
+def broadcast_all_critical_alerts(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Broadcasts Email & SMS notifications for all active critical and high alerts."""
+    alerts = sync_and_fetch_live_alerts()
+    critical_alerts = [a for a in alerts if a["acknowledged"] == 0 and a["severity"] in ("CRITICAL", "HIGH")]
+    all_dispatches = []
+    for ca in critical_alerts[:10]:
+        d = broadcast_alert_notifications(ca)
+        all_dispatches.extend(d)
+
+    db.log_audit(
+        actor_email=current_user["email"],
+        actor_role=current_user["role"],
+        actor_bureau=current_user["bureau_code"],
+        event_type="ALERTS_BULK_DISPATCH",
+        target_entity="CRITICAL_ALERTS",
+        details=f"Broadcast {len(all_dispatches)} multi-channel alerts across {len(critical_alerts)} active alerts."
+    )
+    return {
+        "status": "BROADCAST_COMPLETED",
+        "alerts_targeted": len(critical_alerts),
+        "dispatches_generated": len(all_dispatches)
     }
 
 @router.post("/{alert_id}/acknowledge")

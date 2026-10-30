@@ -1,10 +1,11 @@
 import csv
 import io
 from datetime import datetime, timedelta
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from app.core.database import db, now_ist
+from app.core.security import get_current_user
 from app.services.sla_and_alerts import evaluate_case_sla, get_sla_config_map
 
 router = APIRouter()
@@ -179,7 +180,6 @@ def get_monthly_quarterly_performance():
     links = db.fetch_all("SELECT * FROM case_links WHERE is_active = 1")
     linked_case_ids = {l["source_case_id"] for l in links} | {l["target_case_id"] for l in links}
 
-    # Group real cases into 15-day operational cohorts over the last 75 days
     now = now_ist().date()
     buckets = []
     for i in range(4, -1, -1):
@@ -199,6 +199,37 @@ def get_monthly_quarterly_performance():
         })
     return {"cohort_series": buckets, "total_cases_evaluated": len(cases)}
 
+# ============================================================================
+# Feature 7: Tamper-Evident Hash-Chained Audit Trail Verification
+# ============================================================================
+
+@router.get("/audit-logs")
+def list_audit_logs(limit: int = 100):
+    """Returns the immutable audit log ledger containing cryptographic SHA-256 hash chains."""
+    rows = db.fetch_all("SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT ?", (limit,))
+    return {
+        "count": len(rows),
+        "items": rows
+    }
+
+@router.get("/audit-verify")
+@router.post("/audit-verify")
+def verify_audit_log_cryptographic_integrity():
+    """
+    Traverses the entire audit log chain from Genesis to Head, recalculates each SHA-256 hash,
+    and mathematically verifies that no record has been tampered with, deleted, or injected.
+    """
+    verification = db.verify_audit_chain()
+    return {
+        "verified": verification["valid"],
+        "total_records_checked": verification.get("count", 0),
+        "chain_head_hash": verification.get("chain_head", "0" * 64),
+        "status": verification.get("status", "TAMPER_DETECTED" if not verification["valid"] else "VERIFIED"),
+        "error_details": verification.get("error"),
+        "tampered_audit_id": verification.get("tampered_audit_id"),
+        "cryptographic_standard": "SHA-256 Blockchain-Style Hash Chaining"
+    }
+
 @router.get("/export/csv")
 def export_server_csv_report():
     institutions, cases = _load_enriched_dataset()
@@ -208,45 +239,83 @@ def export_server_csv_report():
         "Case ID", "AICTE Permanent ID", "Institution Name", "Docket Name Variant",
         "City", "State", "Region", "Receipt Date", "Category", "Bureau",
         "Assigned Officer", "Status", "Expected Disposal Date", "SLA State",
-        "Age (Days)", "Last Action", "Next Action"
+        "Days Remaining", "Age Days", "Prescribed SLA Days", "Match Method", "Match Confidence %"
     ])
     for c in cases:
         inst = institutions.get(c["pid"], {})
         writer.writerow([
-            c["case_id"], c["pid"], inst.get("name", ""), c["inst_variant_logged"],
-            inst.get("city", ""), inst.get("state", ""), inst.get("region", ""),
-            c["receipt_date"], c["category"], c["bureau"], c["assigned_officer"],
-            c["status"], c["expected_disposal_date"], c["sla"]["label"],
-            c["sla"]["age_days"], c["last_action"], c["next_action"]
+            c["case_id"],
+            c["pid"],
+            inst.get("name", ""),
+            c["inst_variant_logged"],
+            inst.get("city", ""),
+            inst.get("state", ""),
+            inst.get("region", ""),
+            c["receipt_date"],
+            c["category"],
+            c["bureau"],
+            c["assigned_officer"],
+            c["status"],
+            c["expected_disposal_date"],
+            c["sla"]["state"],
+            c["sla"]["days_remaining"],
+            c["sla"]["age_days"],
+            c["sla"]["prescribed_days"],
+            c["match_method"],
+            c["match_confidence"]
         ])
     output.seek(0)
-    filename = f"AICTE_IICM_MIS_Report_{now_ist().strftime('%Y%m%d')}.csv"
+    filename = f"AICTE_IICM_MIS_Report_{now_ist().strftime('%Y%m%d_%H%M')}.csv"
     return StreamingResponse(
-        iter([output.getvalue()]),
+        io.BytesIO(output.getvalue().encode("utf-8-sig")),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
 
 @router.get("/export/pdf")
-def export_server_pdf_brief():
-    """Generates an official AICTE MIS & Cross-Bureau Overlap Audit PDF on the server using ReportLab."""
+def export_server_pdf_report():
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.pagesizes import letter, landscape
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(letter),
+        leftMargin=24,
+        rightMargin=24,
+        topMargin=24,
+        bottomMargin=24
+    )
+    story = []
+    styles = getSampleStyleSheet()
 
     institutions, cases = _load_enriched_dataset()
     summary = get_executive_summary()
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), leftMargin=28, rightMargin=28, topMargin=28, bottomMargin=28)
-    styles = getSampleStyleSheet()
-    story = []
+    title_style = ParagraphStyle(
+        "DocTitle",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=15,
+        leading=18,
+        textColor=colors.HexColor("#0f2547"),
+    )
+    sub_style = ParagraphStyle(
+        "DocSub",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#475569"),
+    )
 
-    story.append(Paragraph("<b>ALL INDIA COUNCIL FOR TECHNICAL EDUCATION (AICTE) — MINISTRY OF EDUCATION (MIC)</b>", styles["Title"]))
+    story.append(Paragraph("ALL INDIA COUNCIL FOR TECHNICAL EDUCATION (AICTE)", title_style))
     story.append(Paragraph(
-        f"<b>Integrated Institution Complaint Monitoring &amp; Status Dashboard (IICM-SD) — Official Audit Brief</b> (Generated: {summary['generated_at']})",
-        styles["Normal"]
+        f"Integrated Institution Complaint Monitoring & Status Dashboard (IICM-SD) — Executive MIS Brief<br/>"
+        f"Generated: {now_ist().strftime('%d %b %Y, %H:%M:%S IST')} | Dual DB Relational Build (v3.1.0)",
+        sub_style
     ))
     story.append(Spacer(1, 12))
 

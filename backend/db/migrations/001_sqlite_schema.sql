@@ -1,6 +1,8 @@
 -- ============================================================================
 -- AICTE Integrated Institution Complaint Monitoring & Status Dashboard (IICM-SD)
 -- Production Relational Schema (PostgreSQL 16 & SQLite 3 Compatible)
+-- Version 3.1.0 with Lead-Bureau Action Hold, Auto-Escalation Ladder,
+-- Hash-Chained Audit Logs, Multilingual Intake, and Risk Score Architecture
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS bureaus (
@@ -51,7 +53,11 @@ CREATE TABLE IF NOT EXISTS institutions (
     contact_email VARCHAR(128),
     contact_phone VARCHAR(64),
     coordination_status VARCHAR(32) DEFAULT 'SINGLE', -- 'SINGLE', 'UNRESOLVED', 'COORDINATED'
-    coordination_note TEXT
+    coordination_note TEXT,
+    lead_bureau VARCHAR(16) REFERENCES bureaus(code),
+    action_hold INTEGER DEFAULT 0,
+    risk_score REAL DEFAULT 0.0,
+    risk_tier VARCHAR(16) DEFAULT 'LOW'
 );
 
 CREATE TABLE IF NOT EXISTS complaint_cases (
@@ -70,7 +76,16 @@ CREATE TABLE IF NOT EXISTS complaint_cases (
     last_action_date VARCHAR(32),
     expected_disposal_date VARCHAR(32) NOT NULL,
     match_method VARCHAR(255),
-    match_confidence REAL DEFAULT 100.0
+    match_confidence REAL DEFAULT 100.0,
+    escalation_level INTEGER DEFAULT 0,
+    escalation_status VARCHAR(32) DEFAULT 'NORMAL',
+    last_escalated_at VARCHAR(32),
+    complainant_phone VARCHAR(64),
+    complainant_email VARCHAR(128),
+    external_ref_id VARCHAR(64),
+    source_portal VARCHAR(64) DEFAULT 'MANUAL',
+    language VARCHAR(16) DEFAULT 'en',
+    action_hold INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS case_links (
@@ -91,7 +106,7 @@ CREATE TABLE IF NOT EXISTS workflow_history (
     history_id INTEGER PRIMARY KEY AUTOINCREMENT,
     case_id VARCHAR(64) NOT NULL REFERENCES complaint_cases(case_id) ON DELETE CASCADE,
     action_timestamp VARCHAR(32) NOT NULL,
-    action_type VARCHAR(64) NOT NULL, -- 'INTAKE', 'STATUS_UPDATE', 'TRANSFER', 'ESCALATE', 'JOINT_COORDINATION', 'MANUAL_LINK', 'MANUAL_UNLINK', 'DOC_UPLOAD'
+    action_type VARCHAR(64) NOT NULL, -- 'INTAKE', 'STATUS_UPDATE', 'TRANSFER', 'ESCALATE', 'AUTO_ESCALATION', 'JOINT_COORDINATION', 'MANUAL_LINK', 'MANUAL_UNLINK', 'DOC_UPLOAD'
     from_bureau VARCHAR(16),
     to_bureau VARCHAR(16) NOT NULL,
     officer VARCHAR(128) NOT NULL,
@@ -132,5 +147,20 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     actor_bureau VARCHAR(16) NOT NULL,
     event_type VARCHAR(64) NOT NULL,
     target_entity VARCHAR(128) NOT NULL,
-    details TEXT NOT NULL
+    details TEXT NOT NULL,
+    prev_hash VARCHAR(64),
+    entry_hash VARCHAR(64)
+);
+
+CREATE TABLE IF NOT EXISTS notification_dispatches (
+    dispatch_id VARCHAR(64) PRIMARY KEY,
+    alert_id VARCHAR(64),
+    case_id VARCHAR(64),
+    channel VARCHAR(16) NOT NULL, -- 'EMAIL', 'SMS'
+    recipient VARCHAR(128) NOT NULL,
+    destination VARCHAR(128) NOT NULL,
+    subject VARCHAR(255) NOT NULL,
+    message_body TEXT NOT NULL,
+    dispatched_at VARCHAR(32) NOT NULL,
+    delivery_status VARCHAR(32) NOT NULL -- 'DELIVERED', 'QUEUED', 'SIMULATED_SENT'
 );

@@ -77,6 +77,15 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> Dic
     token = authorization.split(" ", 1)[1].strip()
     return decode_jwt_token(token)
 
+def get_optional_current_user(authorization: Optional[str] = Header(default=None)) -> Optional[Dict[str, Any]]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    try:
+        token = authorization.split(" ", 1)[1].strip()
+        return decode_jwt_token(token)
+    except Exception:
+        return None
+
 def check_bureau_permission(user: Dict[str, Any], target_bureau: str, allow_cross_bureau: bool = False) -> None:
     """
     Enforces per-bureau role-based access control (RBAC).
@@ -98,3 +107,87 @@ def check_bureau_permission(user: Dict[str, Any], target_bureau: str, allow_cros
                 f"cannot directly modify a case owned by '{target_bureau}' without transfer or joint coordination."
             ),
         )
+
+# ============================================================================
+# DPDP Act 2023 Complainant PII Masking Utilities
+# ============================================================================
+
+def mask_name(name: str) -> str:
+    """Masks personal names in compliance with DPDP Act 2023 (e.g., 'Ramesh Kumar' -> 'R***** K****')."""
+    if not name:
+        return ""
+    name = name.strip()
+    # If it is a group/official reference, keep category clear
+    if name.lower().startswith("batch of") or "committee" in name.lower() or "directorate" in name.lower() or "reference" in name.lower():
+        return name
+    parts = name.split()
+    masked = []
+    for p in parts:
+        if len(p) <= 2:
+            masked.append(p)
+        else:
+            masked.append(p[0] + "*" * (len(p) - 1))
+    return " ".join(masked)
+
+def mask_email(email: str) -> str:
+    """Masks email address (e.g. 'ramesh.kumar@gmail.com' -> 'r****r@gmail.com')."""
+    if not email or "@" not in email:
+        return email or ""
+    user, domain = email.split("@", 1)
+    if len(user) <= 2:
+        masked_user = user[0] + "*"
+    else:
+        masked_user = user[0] + "*" * (len(user) - 2) + user[-1]
+    return f"{masked_user}@{domain}"
+
+def mask_phone(phone: str) -> str:
+    """Masks phone numbers (e.g. '+91 9876543210' -> '+91 98*****210')."""
+    if not phone:
+        return ""
+    p = phone.strip()
+    if len(p) < 6:
+        return "***"
+    prefix_len = 4 if p.startswith("+91") else 2
+    return p[:prefix_len] + "*" * (len(p) - prefix_len - 3) + p[-3:]
+
+def can_view_pii(user: Optional[Dict[str, Any]], case_bureau: str) -> bool:
+    """
+    Checks if requesting user has full unmasked DPDP clearance.
+    - COMPETENT_AUTHORITY: Full unmasked view across all complaints.
+    - BUREAU_OFFICER: Full unmasked view for complaints owned by their own bureau.
+    - External / Anonymous / Non-owning bureau without unmask clearance: Masked.
+    """
+    if not user:
+        return False
+    role = user.get("role", "")
+    if role == "COMPETENT_AUTHORITY":
+        return True
+    user_bureau = user.get("bureau_code", "")
+    if role in ("BUREAU_OFFICER", "REGIONAL_OFFICER") and user_bureau == case_bureau:
+        return True
+    return False
+
+def apply_pii_masking(case_data: Dict[str, Any], current_user: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Applies role-based dynamic masking to complainant PII according to DPDP Act 2023."""
+    bureau = case_data.get("bureau", "")
+    if can_view_pii(current_user, bureau):
+        return {
+            **case_data,
+            "is_pii_masked": False,
+            "pii_clearance": "GRANTED"
+        }
+
+    raw_name = case_data.get("complainant", "")
+    raw_email = case_data.get("complainant_email", "")
+    raw_phone = case_data.get("complainant_phone", "")
+
+    return {
+        **case_data,
+        "complainant": mask_name(raw_name),
+        "complainant_email": mask_email(raw_email),
+        "complainant_phone": mask_phone(raw_phone),
+        "raw_complainant_name": None,
+        "is_pii_masked": True,
+        "pii_clearance": "RESTRICTED_DPDP_2023",
+        "pii_mask_notice": "Personal data masked per Digital Personal Data Protection (DPDP) Act 2023. Authorized officers can request lawful unmasking via /api/v1/cases/{case_id}/unmask-pii with justification."
+    }

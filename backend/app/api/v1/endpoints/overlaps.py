@@ -1,6 +1,6 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from app.core.database import db, now_ist, today_str, timestamp_str
 from app.core.security import get_current_user
 from app.schemas.payloads import (
@@ -8,9 +8,11 @@ from app.schemas.payloads import (
     ManualCaseLinkRequest,
     ManualCaseUnlinkRequest,
     JointCoordinationRequest,
+    LeadBureauAssignmentRequest
 )
 from app.services.overlap_engine import CrossBureauOverlapEngine
 from app.services.sla_and_alerts import evaluate_case_sla, get_sla_config_map
+from app.services.risk_engine import calculate_institution_risk
 
 router = APIRouter()
 engine = CrossBureauOverlapEngine()
@@ -80,24 +82,34 @@ def list_overlap_groups(coordination_filter: str = "ALL"):
                     "lastActionDate": c["last_action_date"],
                     "expectedDisposalDate": c["expected_disposal_date"],
                     "matchMethod": c["match_method"],
+                    "escalationLevel": int(c.get("escalation_level") or 0),
+                    "actionHold": bool(c.get("action_hold", 0) or inst.get("action_hold", 0)),
                     "linkedCases": c_links,
                     "sla": evaluate_case_sla(c, sla_map)
                 })
 
             aliases_raw = inst.get("aliases", "")
             aliases = [a.strip() for a in aliases_raw.split("|") if a.strip()] if isinstance(aliases_raw, str) else list(aliases_raw or [])
+            risk_summary = calculate_institution_risk(pid, all_cases)
+
             groups.append({
                 "pid": pid,
                 "institution": {
                     **inst,
                     "aliases": aliases,
                     "coordinationStatus": inst.get("coordination_status", "UNRESOLVED"),
-                    "coordinationNote": inst.get("coordination_note", "")
+                    "coordinationNote": inst.get("coordination_note", ""),
+                    "leadBureau": inst.get("lead_bureau"),
+                    "actionHold": bool(inst.get("action_hold", 0)),
+                    "riskScore": risk_summary["risk_score"],
+                    "riskTier": risk_summary["risk_tier"]
                 },
                 "bureaus": bureaus,
                 "isCoordinated": is_coord,
+                "leadBureau": inst.get("lead_bureau"),
+                "actionHold": bool(inst.get("action_hold", 0)),
                 "banner": (
-                    "Coordinated – Joint Action Active"
+                    f"Coordinated – Lead Bureau ({inst.get('lead_bureau') or 'Assigned'}) Active"
                     if is_coord
                     else "Potential Overlapping Cases – Coordination Required"
                 ),
@@ -250,8 +262,10 @@ def manual_unlink_cases(
     curr_ts = timestamp_str(0, now_ist().hour, now_ist().minute)
     db.execute("UPDATE case_links SET is_active = 0 WHERE link_id = ?", (existing["link_id"],))
 
-    for cid, other_id in [(src_id, tgt_id), (tgt_id, src_id)]:
-        c_row = db.fetch_one("SELECT * FROM complaint_cases WHERE case_id = ?", (cid,))
+    src_row = db.fetch_one("SELECT * FROM complaint_cases WHERE case_id = ?", (src_id,))
+    tgt_row = db.fetch_one("SELECT * FROM complaint_cases WHERE case_id = ?", (tgt_id,))
+
+    for c_row, other_id in [(src_row, tgt_id), (tgt_row, src_id)]:
         if c_row:
             db.execute(
                 """INSERT INTO workflow_history (
@@ -259,13 +273,13 @@ def manual_unlink_cases(
                     officer, action_remarks, supporting_doc
                 ) VALUES (?, ?, 'MANUAL_UNLINK', ?, ?, ?, ?, ?)""",
                 (
-                    cid,
+                    c_row["case_id"],
                     curr_ts,
                     c_row["bureau"],
                     c_row["bureau"],
                     f"{current_user['full_name']} ({current_user['bureau_code']})",
                     f"Manually unlinked from {other_id}: {payload.reason.strip()}",
-                    f"Unlink_Audit_{existing['link_id']}.pdf"
+                    f"Case_Unlink_{existing['link_id']}.pdf"
                 )
             )
 
@@ -295,11 +309,19 @@ def execute_joint_coordination_directive(
 
     curr_date = today_str(0)
     curr_ts = timestamp_str(0, now_ist().hour, now_ist().minute)
+    hold_val = 1 if payload.enforce_action_hold else 0
     note = f"Coordinated under Lead: {payload.lead_bureau} ({payload.resolution_protocol.strip()})"
+    if hold_val:
+        note += " [Action Hold Active on Non-Lead Bureaus]"
 
     db.execute(
-        "UPDATE institutions SET coordination_status = 'COORDINATED', coordination_note = ? WHERE pid = ?",
-        (note, pid.strip())
+        """UPDATE institutions
+           SET coordination_status = 'COORDINATED',
+               coordination_note = ?,
+               lead_bureau = ?,
+               action_hold = ?
+           WHERE pid = ?""",
+        (note, payload.lead_bureau, hold_val, pid.strip())
     )
 
     # Ensure pairwise links exist between all active cases of this institution
@@ -336,14 +358,18 @@ def execute_joint_coordination_directive(
     all_ids = [c["case_id"] for c in active_cases]
     for c in active_cases:
         others = [cid for cid in all_ids if cid != c["case_id"]]
+        is_lead_case = (c["bureau"] == payload.lead_bureau)
+        case_hold = 0 if is_lead_case else hold_val
+
         db.execute(
             """UPDATE complaint_cases
-               SET last_action = ?, next_action = ?, last_action_date = ?
+               SET last_action = ?, next_action = ?, last_action_date = ?, action_hold = ?
                WHERE case_id = ?""",
             (
-                f"{curr_date}: [JOINT COORDINATION] {payload.resolution_protocol.strip()}",
+                f"{curr_date}: [JOINT COORDINATION - LEAD: {payload.lead_bureau}] {payload.resolution_protocol.strip()}",
                 f"Proceed under Lead Bureau ({payload.lead_bureau}) joint directive.",
                 curr_date,
+                case_hold,
                 c["case_id"]
             )
         )
@@ -374,6 +400,89 @@ def execute_joint_coordination_directive(
         actor_bureau=current_user["bureau_code"],
         event_type="JOINT_COORDINATION_DIRECTIVE",
         target_entity=pid.strip(),
-        details=f"Executed Joint Coordination Directive for {inst['name']} ({pid}) across {', '.join(all_ids)}"
+        details=f"Executed Joint Coordination Directive for {inst['name']} ({pid}). Lead={payload.lead_bureau}, ActionHold={hold_val}"
     )
-    return {"status": "coordinated", "pid": pid.strip(), "linked_cases": all_ids, "note": note}
+    return {
+        "status": "coordinated",
+        "pid": pid.strip(),
+        "lead_bureau": payload.lead_bureau,
+        "action_hold_enforced": bool(hold_val),
+        "linked_cases": all_ids,
+        "note": note
+    }
+
+@router.post("/{pid}/lead-bureau")
+def assign_lead_bureau_and_hold(
+    pid: str,
+    payload: LeadBureauAssignmentRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Explicitly designates or updates the Lead Bureau and toggles the action hold on conflicting actions."""
+    inst = db.fetch_one("SELECT * FROM institutions WHERE pid = ?", (pid.strip(),))
+    if not inst:
+        raise HTTPException(status_code=404, detail=f"Institution PID '{pid}' not found")
+
+    curr_ts = timestamp_str(0, now_ist().hour, now_ist().minute)
+    hold_val = 1 if payload.action_hold else 0
+
+    db.execute(
+        "UPDATE institutions SET lead_bureau = ?, action_hold = ?, coordination_note = ? WHERE pid = ?",
+        (payload.lead_bureau, hold_val, payload.coordination_directive, pid.strip())
+    )
+
+    # Update active cases action hold flag
+    active_cases = db.fetch_all("SELECT * FROM complaint_cases WHERE pid = ? AND status != 'Disposed'", (pid.strip(),))
+    for c in active_cases:
+        is_lead = (c["bureau"] == payload.lead_bureau)
+        db.execute(
+            "UPDATE complaint_cases SET action_hold = ? WHERE case_id = ?",
+            (0 if is_lead else hold_val, c["case_id"])
+        )
+
+    db.log_audit(
+        actor_email=current_user["email"],
+        actor_role=current_user["role"],
+        actor_bureau=current_user["bureau_code"],
+        event_type="LEAD_BUREAU_ASSIGNED",
+        target_entity=pid.strip(),
+        details=f"Assigned Lead Bureau '{payload.lead_bureau}' for {inst['name']} ({pid}). ActionHold={payload.action_hold}"
+    )
+
+    return {
+        "status": "updated",
+        "pid": pid.strip(),
+        "lead_bureau": payload.lead_bureau,
+        "action_hold": payload.action_hold,
+        "updated_at": curr_ts
+    }
+
+@router.post("/{pid}/release-hold")
+def release_coordination_hold(
+    pid: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Releases the action hold on non-lead bureaus after joint proceedings conclude."""
+    inst = db.fetch_one("SELECT * FROM institutions WHERE pid = ?", (pid.strip(),))
+    if not inst:
+        raise HTTPException(status_code=404, detail=f"Institution PID '{pid}' not found")
+
+    curr_ts = timestamp_str(0, now_ist().hour, now_ist().minute)
+    db.execute("UPDATE institutions SET action_hold = 0 WHERE pid = ?", (pid.strip(),))
+    db.execute("UPDATE complaint_cases SET action_hold = 0 WHERE pid = ?", (pid.strip(),))
+
+    db.log_audit(
+        actor_email=current_user["email"],
+        actor_role=current_user["role"],
+        actor_bureau=current_user["bureau_code"],
+        event_type="ACTION_HOLD_RELEASED",
+        target_entity=pid.strip(),
+        details=f"Released action hold for institution {inst['name']} ({pid})."
+    )
+
+    return {
+        "status": "released",
+        "pid": pid.strip(),
+        "action_hold": False,
+        "released_by": current_user["email"],
+        "released_at": curr_ts
+    }

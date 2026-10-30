@@ -6,6 +6,7 @@ from app.core.database import db
 from app.core.security import get_current_user
 from app.services.sla_and_alerts import evaluate_case_sla, get_sla_config_map
 from app.services.overlap_engine import CrossBureauOverlapEngine
+from app.services.risk_engine import calculate_institution_risk, get_institution_risk_leaderboard
 
 router = APIRouter()
 engine = CrossBureauOverlapEngine()
@@ -21,7 +22,34 @@ def _format_inst(row: Dict[str, Any]) -> Dict[str, Any]:
         "principal": row.get("principal_name", ""),
         "approvalStatus": row.get("approval_status", ""),
         "coordinationStatus": row.get("coordination_status", "SINGLE"),
-        "coordinationNote": row.get("coordination_note", "")
+        "coordinationNote": row.get("coordination_note", ""),
+        "leadBureau": row.get("lead_bureau"),
+        "actionHold": bool(row.get("action_hold", 0)),
+        "riskScore": float(row.get("risk_score") or 0.0),
+        "riskTier": row.get("risk_tier", "LOW")
+    }
+
+# ============================================================================
+# Feature 5: Institution Compliance Risk Score Leaderboard
+# ============================================================================
+
+@router.get("/risk-scores")
+def list_institution_risk_scores(
+    region: Optional[str] = None,
+    state: Optional[str] = None,
+    limit: int = 50
+):
+    """
+    Returns ranked compliance risk index leaderboard (0-100) across all AICTE approved
+    institutions. Factored by complaint frequency, severity weights (ragging/faculty),
+    multi-bureau overlap recurrence, and SLA breach depth.
+    """
+    leaderboard = get_institution_risk_leaderboard(limit=limit, region=region, state=state)
+    return {
+        "count": len(leaderboard),
+        "critical_count": sum(1 for i in leaderboard if i["risk_tier"] == "CRITICAL"),
+        "high_count": sum(1 for i in leaderboard if i["risk_tier"] == "HIGH"),
+        "leaderboard": leaderboard
     }
 
 @router.get("/")
@@ -104,6 +132,8 @@ def get_institution_consolidated_profile(pid: str):
             "lastActionDate": c["last_action_date"],
             "expectedDisposalDate": c["expected_disposal_date"],
             "matchMethod": c["match_method"],
+            "escalationLevel": int(c.get("escalation_level") or 0),
+            "actionHold": bool(c.get("action_hold", 0) or inst.get("actionHold", False)),
             "linkedCases": linked_ids,
             "sla": sla,
             "history": [
@@ -134,15 +164,25 @@ def get_institution_consolidated_profile(pid: str):
             "disposed": len(b_all) - len(b_act)
         }
 
+    # Compute live compliance risk profile
+    risk_profile = calculate_institution_risk(pid, cases_raw)
+
     return {
-        "institution": inst,
+        "institution": {
+            **inst,
+            "riskScore": risk_profile["risk_score"],
+            "riskTier": risk_profile["risk_tier"]
+        },
         "bureau_footprint": bureau_footprint,
         "active_bureaus": active_bureaus,
         "has_overlap": len(active_bureaus) > 1,
+        "lead_bureau": inst.get("leadBureau"),
+        "action_hold": inst.get("actionHold"),
+        "risk_profile": risk_profile,
         "overlap_banner": (
-            "Potential Overlapping Cases – Coordination Required"
-            if len(active_bureaus) > 1 and inst["coordinationStatus"] != "COORDINATED"
-            else ("Coordinated – Joint Action Active" if len(active_bureaus) > 1 else "Single Bureau / Clean")
+            f"Coordinated – Lead Bureau ({inst.get('leadBureau') or 'Assigned'}) Active"
+            if len(active_bureaus) > 1 and inst["coordinationStatus"] == "COORDINATED"
+            else ("Potential Overlapping Cases – Coordination Required" if len(active_bureaus) > 1 else "Single Bureau / Clean")
         ),
         "active_case_links": links_raw,
         "consolidated_case_history": enriched_cases

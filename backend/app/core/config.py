@@ -3,7 +3,7 @@ from typing import List
 
 class Settings:
     PROJECT_NAME: str = "AICTE Integrated Institution Complaint Monitoring & Status Dashboard (IICM-SD)"
-    VERSION: str = "3.0.0"
+    VERSION: str = "3.1.0"
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
         f"sqlite:///{os.path.abspath(os.path.join(os.path.dirname(__file__), '../../aicte_iicm.db'))}"
@@ -11,6 +11,7 @@ class Settings:
     JWT_SECRET: str = os.getenv("JWT_SECRET", "aicte-mic-iicm-production-hmac-sha256-secret-2026")
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRY_HOURS: int = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
+    WEBHOOK_SECRET: str = os.getenv("WEBHOOK_SECRET", "aicte-grievance-webhook-feed-key-2026")
 
     # Tuned fuzzy threshold (78.0%) to prevent false-positive institution matches
     OVERLAP_FUZZY_THRESHOLD: float = float(os.getenv("OVERLAP_FUZZY_THRESHOLD", "78.0"))

@@ -1,28 +1,47 @@
 import os
 import uuid
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from typing import Any, Dict, List, Optional
 from app.core.config import settings
 from app.core.database import db, now_ist, today_str, timestamp_str
-from app.core.security import get_current_user, check_bureau_permission
+from app.core.security import (
+    get_current_user,
+    get_optional_current_user,
+    check_bureau_permission,
+    apply_pii_masking
+)
 from app.schemas.payloads import (
     CaseCreateRequest,
     WorkflowUpdateRequest,
     CaseTransferRequest,
     CaseEscalateRequest,
+    ExternalComplaintWebhookRequest,
+    PIIUnmaskRequest
 )
-from app.services.overlap_engine import CrossBureauOverlapEngine
+from app.services.overlap_engine import (
+    CrossBureauOverlapEngine,
+    cross_lingual_semantic_expansion,
+    detect_language
+)
 from app.services.sla_and_alerts import (
     compute_expected_disposal_date,
     evaluate_case_sla,
     get_sla_config_map,
+    run_auto_escalation_ladder
 )
+from app.services.notification_service import broadcast_alert_notifications
 
 router = APIRouter()
 engine = CrossBureauOverlapEngine()
 
-def _enrich_case(c: Dict[str, Any], inst_map: Dict[str, Dict[str, Any]], sla_map: Dict[str, Dict[str, Any]], all_links: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _enrich_case(
+    c: Dict[str, Any],
+    inst_map: Dict[str, Dict[str, Any]],
+    sla_map: Dict[str, Dict[str, Any]],
+    all_links: List[Dict[str, Any]],
+    current_user: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     inst = inst_map.get(c["pid"], {})
     sla = evaluate_case_sla(c, sla_map)
     history_rows = db.fetch_all("SELECT * FROM workflow_history WHERE case_id = ? ORDER BY history_id ASC", (c["case_id"],))
@@ -32,7 +51,11 @@ def _enrich_case(c: Dict[str, Any], inst_map: Dict[str, Dict[str, Any]], sla_map
         for lnk in all_links
         if lnk["is_active"] == 1 and (lnk["source_case_id"] == c["case_id"] or lnk["target_case_id"] == c["case_id"])
     ]
-    return {
+
+    is_action_held = bool(c.get("action_hold", 0) or inst.get("action_hold", 0))
+    lead_bureau = inst.get("lead_bureau")
+
+    base = {
         **c,
         "caseId": c["case_id"],
         "instVariantLogged": c["inst_variant_logged"],
@@ -48,6 +71,14 @@ def _enrich_case(c: Dict[str, Any], inst_map: Dict[str, Dict[str, Any]], sla_map
         "expectedDisposalDate": c["expected_disposal_date"],
         "matchMethod": c["match_method"],
         "matchConfidence": c["match_confidence"],
+        "escalationLevel": int(c.get("escalation_level") or 0),
+        "escalationStatus": c.get("escalation_status", "NORMAL"),
+        "lastEscalatedAt": c.get("last_escalated_at"),
+        "actionHold": is_action_held,
+        "leadBureau": lead_bureau,
+        "sourcePortal": c.get("source_portal", "MANUAL"),
+        "externalRefId": c.get("external_ref_id"),
+        "language": c.get("language", "en"),
         "linkedCases": linked_ids,
         "sla": sla,
         "history": [
@@ -66,6 +97,9 @@ def _enrich_case(c: Dict[str, Any], inst_map: Dict[str, Dict[str, Any]], sla_map
         "documents": doc_rows
     }
 
+    # Apply DPDP Act 2023 Complainant PII Masking
+    return apply_pii_masking(base, current_user)
+
 @router.get("/")
 def search_and_filter_cases(
     q: Optional[str] = None,
@@ -80,7 +114,8 @@ def search_and_filter_cases(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     page: int = 1,
-    page_size: int = 20
+    page_size: int = 20,
+    current_user: Optional[Dict[str, Any]] = Depends(get_optional_current_user)
 ):
     inst_rows = db.fetch_all("SELECT * FROM institutions")
     inst_map = {i["pid"]: i for i in inst_rows}
@@ -88,13 +123,12 @@ def search_and_filter_cases(
     all_links = db.fetch_all("SELECT * FROM case_links WHERE is_active = 1")
     raw_cases = db.fetch_all("SELECT * FROM complaint_cases ORDER BY receipt_date DESC, case_id DESC")
 
-    # Pre-compute active bureaus per institution for overlap filtering
     active_bureaus_by_pid: Dict[str, set] = {}
     for rc in raw_cases:
         if rc["status"] != "Disposed":
             active_bureaus_by_pid.setdefault(rc["pid"], set()).add(rc["bureau"])
 
-    enriched = [_enrich_case(c, inst_map, sla_map, all_links) for c in raw_cases]
+    enriched = [_enrich_case(c, inst_map, sla_map, all_links, current_user) for c in raw_cases]
 
     filtered = []
     for item in enriched:
@@ -119,7 +153,7 @@ def search_and_filter_cases(
                 continue
 
         if pid and pid.strip():
-            if pid.strip().lower() not in item["pid"].lower():
+            if item["pid"].lower() != pid.strip().lower():
                 continue
 
         if case_id and case_id.strip():
@@ -127,29 +161,33 @@ def search_and_filter_cases(
                 continue
 
         if bureau and bureau != "ALL":
-            if item["bureau"] != bureau:
+            if item["bureau"].upper() != bureau.strip().upper():
                 continue
 
         if region and region != "ALL":
-            if item["region"].lower() != region.lower():
+            if item["region"].lower() != region.strip().lower():
                 continue
 
         if category and category != "ALL":
-            if item["category"] != category:
+            if item["category"].strip().lower() != category.strip().lower():
                 continue
 
         if status and status != "ALL":
-            if item["status"] != status:
+            if item["status"].lower() != status.strip().lower():
                 continue
 
         if special_flag and special_flag != "ALL":
-            if special_flag == "OVERLAP_ONLY" and not has_overlap:
+            if special_flag == "OVERLAPPING" and not (has_overlap and not is_coordinated):
                 continue
-            if special_flag == "UNRESOLVED_OVERLAP" and (not has_overlap or is_coordinated):
+            if special_flag == "COORDINATED" and not (has_overlap and is_coordinated):
                 continue
             if special_flag == "SLA_BREACHED" and item["sla"]["state"] != "BREACHED":
                 continue
             if special_flag == "SLA_APPROACHING" and item["sla"]["state"] != "APPROACHING":
+                continue
+            if special_flag == "ACTION_HOLD" and not item["actionHold"]:
+                continue
+            if special_flag == "ESCALATED" and item["escalationLevel"] == 0:
                 continue
 
         if date_from and date_from.strip():
@@ -177,7 +215,10 @@ def search_and_filter_cases(
     }
 
 @router.get("/{case_id}")
-def get_case_detail(case_id: str):
+def get_case_detail(
+    case_id: str,
+    current_user: Optional[Dict[str, Any]] = Depends(get_optional_current_user)
+):
     raw = db.fetch_one("SELECT * FROM complaint_cases WHERE case_id = ?", (case_id.strip(),))
     if not raw:
         raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found")
@@ -185,9 +226,8 @@ def get_case_detail(case_id: str):
     inst_map = {i["pid"]: i for i in inst_rows}
     sla_map = get_sla_config_map()
     all_links = db.fetch_all("SELECT * FROM case_links WHERE is_active = 1")
-    enriched = _enrich_case(raw, inst_map, sla_map, all_links)
+    enriched = _enrich_case(raw, inst_map, sla_map, all_links, current_user)
 
-    # Include overlap analysis with other active cases of the same institution
     other_active = [
         c for c in db.fetch_all("SELECT * FROM complaint_cases WHERE pid = ? AND case_id != ? AND status != 'Disposed'", (raw["pid"], raw["case_id"]))
     ]
@@ -237,6 +277,9 @@ def register_new_complaint(
     curr_ts = timestamp_str(0, now_ist().hour, now_ist().minute)
     exp_date = compute_expected_disposal_date(curr_date, payload.category, payload.sla_days or 0)
 
+    # Detect language of complaint description
+    lang = detect_language(payload.description)
+
     # Generate unique sequential Case ID
     existing_cnt = db.fetch_one("SELECT COUNT(*) AS cnt FROM complaint_cases")["cnt"]
     new_case_id = f"AICTE-{payload.bureau}-{910 + existing_cnt + 1:04d}"
@@ -256,8 +299,10 @@ def register_new_complaint(
         """INSERT INTO complaint_cases (
             case_id, pid, inst_variant_logged, receipt_date, category, complainant,
             description, status, bureau, assigned_officer, last_action, next_action,
-            last_action_date, expected_disposal_date, match_method, match_confidence
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Under Process', ?, ?, ?, ?, ?, ?, ?, ?)""",
+            last_action_date, expected_disposal_date, match_method, match_confidence,
+            escalation_level, escalation_status, complainant_phone, complainant_email,
+            source_portal, language
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Under Process', ?, ?, ?, ?, ?, ?, ?, ?, 0, 'NORMAL', ?, ?, 'MANUAL', ?)""",
         (
             new_case_id,
             resolved_pid,
@@ -273,7 +318,10 @@ def register_new_complaint(
             curr_date,
             exp_date,
             entity_res["method"],
-            entity_res["confidence"]
+            entity_res["confidence"],
+            payload.complainant_phone.strip() if payload.complainant_phone else None,
+            payload.complainant_email.strip() if payload.complainant_email else None,
+            lang
         )
     )
 
@@ -338,6 +386,214 @@ def register_new_complaint(
         "overlap_evaluation": overlap_eval
     }
 
+# ============================================================================
+# Feature 3: Complaint Intake API & Webhook (Single Window Integration)
+# ============================================================================
+
+@router.post("/webhook", status_code=status.HTTP_201_CREATED)
+@router.post("/intake", status_code=status.HTTP_201_CREATED)
+def external_complaint_intake_webhook(
+    payload: ExternalComplaintWebhookRequest,
+    x_webhook_secret: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None)
+):
+    """
+    Single-Window Automated Complaint Intake Webhook API for external grievance feeds
+    (CPGRAMS, AICTE Citizen Portal, State DTEs). Supports multilingual intake (Hindi, Tamil),
+    instant entity resolution, real-time overlap detection, and auto-linking.
+    """
+    # Verify Webhook Secret or Bearer Token
+    authenticated = False
+    caller_identity = "CPGRAMS_FEED_INGEST"
+    if x_webhook_secret and x_webhook_secret.strip() == settings.WEBHOOK_SECRET:
+        authenticated = True
+        caller_identity = f"WEBHOOK_{payload.source_portal.upper()}"
+    elif authorization:
+        user = get_optional_current_user(authorization)
+        if user:
+            authenticated = True
+            caller_identity = user.get("email", "AUTHORIZED_USER")
+
+    if not authenticated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized Webhook Access: Invalid X-Webhook-Secret or Bearer Token."
+        )
+
+    institutions = db.fetch_all("SELECT * FROM institutions")
+    entity_res = engine.resolve_institution_entity(
+        raw_name=payload.institution_name,
+        raw_pid=payload.aicte_pid,
+        institutions=institutions
+    )
+    if not entity_res["matched"]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Webhook Ingestion Failed: Could not resolve '{payload.institution_name}' to an approved AICTE Institution."
+        )
+
+    matched_inst = entity_res["institution"]
+    resolved_pid = matched_inst["pid"]
+
+    # Multilingual expansion and automatic category detection
+    expanded_text, detected_lang, predicted_cat = cross_lingual_semantic_expansion(payload.description)
+    category = payload.category or predicted_cat or "Fee Refund & Overcharging"
+
+    # Auto-assign initial bureau based on regulatory category
+    category_to_bureau = {
+        "Hostel & Campus Safety / Ragging": "PGRC",
+        "Fee Refund & Overcharging": "PGRC",
+        "Original Certificate Withholding": "PGRC",
+        "Unapproved Intake / Excess Admission": "RB",
+        "Faculty Salary & Qualification Norms": "RB",
+        "Fake Faculty / Biometric Attendance": "VC",
+        "Infrastructure & Lab Deficit": "AB"
+    }
+    assigned_bureau = category_to_bureau.get(category, "PGRC")
+
+    # Assigned Officer designation
+    bureau_officers = {
+        "PGRC": "Shri V. K. Sharma (PGRC Scrutiny Cell)",
+        "RB": "Dr. Ananya Nair (Regulation Desk)",
+        "AB": "Shri M. S. Gill (Approval Directorate)",
+        "VC": "Shri D. P. Singh (Vigilance Ingestion)",
+        "RO": "Regional Officer Directorate"
+    }
+    assigned_officer = bureau_officers.get(assigned_bureau, "Desk Officer (Central Scrutiny)")
+
+    curr_date = payload.receipt_date or today_str(0)
+    curr_ts = timestamp_str(0, now_ist().hour, now_ist().minute)
+    exp_date = compute_expected_disposal_date(curr_date, category)
+
+    existing_cnt = db.fetch_one("SELECT COUNT(*) AS cnt FROM complaint_cases")["cnt"]
+    new_case_id = f"AICTE-{assigned_bureau}-{910 + existing_cnt + 1:04d}"
+
+    active_cases = db.fetch_all("SELECT * FROM complaint_cases WHERE pid = ? AND status != 'Disposed'", (resolved_pid,))
+    overlap_eval = engine.check_cross_bureau_overlap(
+        pid=resolved_pid,
+        receiving_bureau=assigned_bureau,
+        active_cases=active_cases,
+        incoming_category=category,
+        incoming_description=payload.description,
+        incoming_date=curr_date,
+        entity_confidence=entity_res["confidence"]
+    )
+
+    db.execute(
+        """INSERT INTO complaint_cases (
+            case_id, pid, inst_variant_logged, receipt_date, category, complainant,
+            description, status, bureau, assigned_officer, last_action, next_action,
+            last_action_date, expected_disposal_date, match_method, match_confidence,
+            escalation_level, escalation_status, complainant_phone, complainant_email,
+            external_ref_id, source_portal, language
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Under Process', ?, ?, ?, ?, ?, ?, ?, ?, 0, 'NORMAL', ?, ?, ?, ?, ?)""",
+        (
+            new_case_id,
+            resolved_pid,
+            payload.institution_name.strip(),
+            curr_date,
+            category,
+            payload.complainant_name.strip(),
+            payload.description.strip(),
+            assigned_bureau,
+            assigned_officer,
+            f"{curr_date}: Ingested via {payload.source_portal} Single-Window Webhook (Ref: {payload.external_reference_id})",
+            f"Conduct initial scrutiny and correlate with active overlap cluster.",
+            curr_date,
+            exp_date,
+            f"Webhook Resolution ({entity_res['method']})",
+            entity_res["confidence"],
+            payload.complainant_phone.strip() if payload.complainant_phone else None,
+            payload.complainant_email.strip() if payload.complainant_email else None,
+            payload.external_reference_id.strip(),
+            payload.source_portal.strip(),
+            detected_lang
+        )
+    )
+
+    db.execute(
+        """INSERT INTO workflow_history (
+            case_id, action_timestamp, action_type, from_bureau, to_bureau,
+            officer, action_remarks, supporting_doc
+        ) VALUES (?, ?, 'INTAKE', NULL, ?, ?, ?, ?)""",
+        (
+            new_case_id,
+            curr_ts,
+            assigned_bureau,
+            f"{payload.source_portal} Webhook Gateway",
+            f"External grievance intake processed from {payload.source_portal}. External Ref: {payload.external_reference_id}.",
+            f"Webhook_Receipt_{new_case_id}.pdf"
+        )
+    )
+
+    # Auto-link colliding cases if overlap exists
+    for col in overlap_eval["colliding_cases"]:
+        lnk_id = f"LNK-{uuid.uuid4().hex[:8].upper()}"
+        sim_score = col["overlap_metrics"]["composite_overlap_score"]
+        db.execute(
+            """INSERT INTO case_links (
+                link_id, source_case_id, target_case_id, pid, link_type, similarity_score,
+                lead_bureau, coordination_directive, linked_by, linked_at, is_active
+            ) VALUES (?, ?, ?, ?, 'AI_FUZZY_CONTENT', ?, ?, ?, ?, ?, 1)""",
+            (
+                lnk_id,
+                new_case_id,
+                col["case_id"],
+                resolved_pid,
+                sim_score,
+                assigned_bureau,
+                f"Auto-linked on webhook intake (Composite Overlap: {sim_score}%)",
+                caller_identity,
+                curr_ts
+            )
+        )
+
+    if overlap_eval["has_overlap"]:
+        bureaus_str = ", ".join(overlap_eval["bureaus_involved"])
+        db.execute(
+            "UPDATE institutions SET coordination_status = 'UNRESOLVED', coordination_note = ? WHERE pid = ?",
+            (f"Potential Overlapping Cases – Coordination Required across {bureaus_str}", resolved_pid)
+        )
+
+    # Hash-chained audit logging
+    db.log_audit(
+        actor_email=caller_identity,
+        actor_role="EXTERNAL_WEBHOOK_INGEST",
+        actor_bureau=assigned_bureau,
+        event_type="WEBHOOK_COMPLAINT_INTAKE",
+        target_entity=new_case_id,
+        details=(
+            f"Ingested external grievance from {payload.source_portal} ({payload.external_reference_id}) "
+            f"for {matched_inst['name']} ({resolved_pid}). Overlap={overlap_eval['has_overlap']}. Lang={detected_lang}"
+        )
+    )
+
+    receipt_token = uuid.uuid4().hex.upper()
+    return {
+        "status": "PROCESSED",
+        "case_id": new_case_id,
+        "external_reference_id": payload.external_reference_id,
+        "source_portal": payload.source_portal,
+        "resolved_institution": {
+            "pid": resolved_pid,
+            "name": matched_inst["name"],
+            "city": matched_inst["city"],
+            "state": matched_inst["state"]
+        },
+        "assigned_bureau": assigned_bureau,
+        "assigned_officer": assigned_officer,
+        "category": category,
+        "language_detected": detected_lang,
+        "has_overlap": overlap_eval["has_overlap"],
+        "overlap_evaluation": overlap_eval,
+        "expected_disposal_date": exp_date,
+        "intake_receipt_token": receipt_token
+    }
+
+# ============================================================================
+# Feature 1: Lead-Bureau Designation & Action Hold Enforcement
+# ============================================================================
+
 @router.post("/{case_id}/workflow")
 def update_case_workflow(
     case_id: str,
@@ -349,6 +605,23 @@ def update_case_workflow(
         raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found")
 
     check_bureau_permission(current_user, c["bureau"])
+
+    # Enforce Lead-Bureau Action Hold
+    inst = db.fetch_one("SELECT * FROM institutions WHERE pid = ?", (c["pid"],))
+    if inst and inst.get("action_hold") == 1 and inst.get("lead_bureau"):
+        lead_b = inst["lead_bureau"]
+        user_role = current_user.get("role", "")
+        user_bureau = current_user.get("bureau_code", "")
+        if user_role != "COMPETENT_AUTHORITY" and user_bureau != lead_b and not payload.force_lead_override:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"ACTION HOLD ACTIVE: Institution '{inst.get('name', c['pid'])}' ({c['pid']}) is currently under active coordination "
+                    f"led by Lead Bureau '{lead_b}'. Unilateral actions by '{user_bureau}' are placed on HOLD to prevent parallel or conflicting "
+                    f"regulatory directives under the AICTE single-window mandate. Coordinate directly through Lead Bureau ({lead_b}) or request HQ clearance."
+                )
+            )
+
     curr_date = today_str(0)
     curr_ts = timestamp_str(0, now_ist().hour, now_ist().minute)
 
@@ -389,7 +662,7 @@ def update_case_workflow(
         target_entity=case_id.strip(),
         details=f"Updated status of {case_id} to '{payload.new_status}': {payload.remarks.strip()}"
     )
-    return get_case_detail(case_id.strip())
+    return get_case_detail(case_id.strip(), current_user)
 
 @router.post("/{case_id}/transfer")
 def transfer_case_between_bureaus(
@@ -402,6 +675,22 @@ def transfer_case_between_bureaus(
         raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found")
 
     check_bureau_permission(current_user, c["bureau"])
+
+    # Enforce Lead-Bureau Action Hold
+    inst = db.fetch_one("SELECT * FROM institutions WHERE pid = ?", (c["pid"],))
+    if inst and inst.get("action_hold") == 1 and inst.get("lead_bureau"):
+        lead_b = inst["lead_bureau"]
+        user_role = current_user.get("role", "")
+        user_bureau = current_user.get("bureau_code", "")
+        if user_role != "COMPETENT_AUTHORITY" and user_bureau != lead_b and not payload.force_lead_override:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"ACTION HOLD ACTIVE: Transfer blocked. Institution '{inst.get('name', c['pid'])}' is under coordination led by {lead_b}. "
+                    f"Unilateral transfers are restricted while action hold is active."
+                )
+            )
+
     from_bureau = c["bureau"]
     curr_date = today_str(0)
     curr_ts = timestamp_str(0, now_ist().hour, now_ist().minute)
@@ -445,7 +734,7 @@ def transfer_case_between_bureaus(
         target_entity=case_id.strip(),
         details=f"Transferred {case_id} from {from_bureau} to {payload.to_bureau} ({payload.target_officer}). Reason: {payload.transfer_reason}"
     )
-    return get_case_detail(case_id.strip())
+    return get_case_detail(case_id.strip(), current_user)
 
 @router.post("/{case_id}/escalate")
 def escalate_case(
@@ -460,13 +749,20 @@ def escalate_case(
     check_bureau_permission(current_user, c["bureau"], allow_cross_bureau=True)
     curr_date = today_str(0)
     curr_ts = timestamp_str(0, now_ist().hour, now_ist().minute)
+    new_level = max(1, int(c.get("escalation_level") or 0) + 1)
 
     db.execute(
         """UPDATE complaint_cases
            SET status = 'Escalated',
+               escalation_level = ?,
+               escalation_status = ?,
+               last_escalated_at = ?,
                last_action = ?, next_action = ?, last_action_date = ?
            WHERE case_id = ?""",
         (
+            new_level,
+            f"ESCALATED_L{new_level}",
+            curr_ts,
             f"{curr_date}: [ESCALATED to {payload.escalation_authority.strip()}] {payload.escalation_reason.strip()}",
             payload.next_action.strip(),
             curr_date,
@@ -498,7 +794,69 @@ def escalate_case(
         target_entity=case_id.strip(),
         details=f"Escalated {case_id} to {payload.escalation_authority}: {payload.escalation_reason}"
     )
-    return get_case_detail(case_id.strip())
+    return get_case_detail(case_id.strip(), current_user)
+
+# ============================================================================
+# Feature 2: Auto-Escalation Ladder Trigger
+# ============================================================================
+
+@router.post("/auto-escalate")
+def trigger_auto_escalation_ladder(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Triggers the automated SLA escalation ladder scan across all active complaints."""
+    promoted = run_auto_escalation_ladder()
+    return {
+        "status": "COMPLETED",
+        "cases_escalated_count": len(promoted),
+        "escalated_cases": promoted
+    }
+
+# ============================================================================
+# Feature 8: DPDP Act Complainant PII Lawful Unmasking API
+# ============================================================================
+
+@router.post("/{case_id}/unmask-pii")
+def unmask_complainant_pii(
+    case_id: str,
+    payload: PIIUnmaskRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Lawfully unmasks complainant PII (name, phone, email) under the Digital Personal Data
+    Protection (DPDP) Act 2023. Generates an immutable, hash-chained audit record recording
+    the officer identity, justification reason, and statutory reference.
+    """
+    c = db.fetch_one("SELECT * FROM complaint_cases WHERE case_id = ?", (case_id.strip(),))
+    if not c:
+        raise HTTPException(status_code=404, detail=f"Case '{case_id}' not found")
+
+    curr_ts = timestamp_str(0, now_ist().hour, now_ist().minute)
+
+    # Log to tamper-evident hash-chained audit trail
+    db.log_audit(
+        actor_email=current_user["email"],
+        actor_role=current_user["role"],
+        actor_bureau=current_user["bureau_code"],
+        event_type="PII_UNMASK_ACCESSED",
+        target_entity=case_id.strip(),
+        details=(
+            f"Officer accessed unmasked complainant PII for case {case_id.strip()}. "
+            f"Justification: {payload.justification_reason.strip()}. Reference: {payload.statutory_reference or 'N/A'}"
+        )
+    )
+
+    return {
+        "case_id": case_id.strip(),
+        "is_pii_unmasked": True,
+        "complainant": c["complainant"],
+        "complainant_email": c.get("complainant_email") or "Not provided",
+        "complainant_phone": c.get("complainant_phone") or "Not provided",
+        "unmasked_by": current_user["email"],
+        "unmasked_at": curr_ts,
+        "justification_logged": payload.justification_reason.strip(),
+        "statutory_compliance": "DPDP Act 2023 Section 8 (Lawful Processing & Audit Logged)"
+    }
 
 @router.post("/{case_id}/documents", status_code=status.HTTP_201_CREATED)
 async def upload_supporting_document(

@@ -1,12 +1,12 @@
 """
 AICTE IICM-SD Advanced Entity & Content-Based Cross-Bureau Overlap Engine
 =========================================================================
-Addresses Innovation Requirements:
-1. Proper Fuzzy Entity Resolution (rapidfuzz Jaro-Winkler + Token-Set Ratio with
-   domain stopword stripping and a tuned 78.0% threshold to prevent false positives).
-2. Content-Based Overlap Detection comparing complaint category relatedness,
-   TF-IDF word/character n-gram cosine similarity on complaint text, and temporal
-   proximity of receipt dates.
+Addresses Key Innovation & Regulatory Requirements:
+1. Robust Multilingual Matching (English, Hindi, Tamil, Hinglish, Tanglish).
+2. Proper Fuzzy Entity Resolution (rapidfuzz Jaro-Winkler + Token-Set Ratio with
+   domain stopword stripping and tuned 78.0% threshold to prevent false positives).
+3. Cross-Bureau Content Overlap Detection comparing category relatedness,
+   TF-IDF word/n-gram cosine similarity, and temporal proximity.
 """
 import math
 import re
@@ -21,7 +21,6 @@ except ImportError:
     HAS_RAPIDFUZZ = False
 
 # Generic higher-education tokens that appear in almost every institution name
-# Stripping these prevents false-positive matches between unrelated colleges.
 INSTITUTION_STOPWORDS: Set[str] = {
     "institute", "institution", "institutions", "college", "colleges",
     "university", "vishwavidyalaya", "visvavidyalayam", "vidyapeeth",
@@ -42,6 +41,18 @@ CONTENT_STOPWORDS: Set[str] = {
     "regarding", "against", "institution", "college", "students", "student"
 }
 
+# Indian Language Stopwords
+HINDI_STOPWORDS: Set[str] = {
+    "के", "का", "की", "को", "में", "पर", "से", "और", "है", "हैं",
+    "था", "थी", "थे", "यह", "वह", "इस", "उस", "द्वारा", "नहीं",
+    "रहा", "रही", "रहे", "गया", "गई", "गए", "किया", "हुए", "ने", "एक"
+}
+
+TAMIL_STOPWORDS: Set[str] = {
+    "மற்றும்", "இல்", "க்கு", "ஒரு", "என்று", "இந்த", "அந்த", "உள்ள",
+    "ஆகிய", "மூலம்", "என", "இல்லை", "செய்து", "கொண்டு", "பற்றி", "தான்"
+}
+
 # Cross-Category Regulatory Relatedness Matrix (0.0 to 1.0)
 CATEGORY_RELATEDNESS: Dict[Tuple[str, str], float] = {
     ("Fee Refund & Overcharging", "Unapproved Intake / Excess Admission"): 0.85,
@@ -54,12 +65,81 @@ CATEGORY_RELATEDNESS: Dict[Tuple[str, str], float] = {
     ("Original Certificate Withholding", "Faculty Salary & Qualification Norms"): 0.72,
 }
 
+# Multilingual Regex Concepts mapping Hindi, Tamil, and Romanized forms to Canonical English concepts
+MULTILINGUAL_CONCEPT_MAP: List[Tuple[re.Pattern, str, str]] = [
+    # (regex, canonical_category, canonical_tokens)
+    (
+        re.compile(r"(फ़ीस|फीस|शुल्क|रिफंड|वापसी|अतिरिक्त|पैसे|डिपॉजिट|काउशन|हड़प|fees?|shulk|wapsi|paisa|refund|extra\s*fees?|caution\s*deposit|கட்டணம்|திரும்ப|பணம்|கூடுதல்|வைப்புத்தொகை|அபராதம்|kattanam|thirumba)", re.IGNORECASE),
+        "Fee Refund & Overcharging",
+        "fee_refund tuition_fee caution_deposit extra_charge refund financial"
+    ),
+    (
+        re.compile(r"(प्रमाण\s*पत्र|अंकतालिका|दस्तावेज|सर्टिफिकेट|मार्कशीट|रोका|वापस\s*नहीं|जब्त|pramaan\s*patra|marksheet|certificate|rok\s*rakha|wapas\s*nahi|சான்றிதழ்|சான்றிதழ்களை|மதிப்பெண்|நிறுத்தி|தராமல்|பிடித்து|சான்றிதழ்கள்|saandrithazh|withhold)", re.IGNORECASE),
+        "Original Certificate Withholding",
+        "certificate_withholding original_certificates marksheet degree detention release"
+    ),
+    (
+        re.compile(r"(दाखिला|प्रवेश|अतिरिक्त\s*सीट|अवैध\s*प्रवेश|अनधिकृत|स्वीकृत\s*क्षमता|dakhila|pravesh|extra\s*seats?|unapproved\s*intake|excess\s*admission|சேர்க்கை|அனுமதி\s*பெறாத|கூடுதல்\s*இடங்கள்|அங்கீகரிக்கப்படாத|மாணவர்\s*சேர்க்கை)", re.IGNORECASE),
+        "Unapproved Intake / Excess Admission",
+        "unapproved_intake excess_admission sanctioned_intake unapproved_seats quota"
+    ),
+    (
+        re.compile(r"(शिक्षक|प्राध्यापक|प्रोफेसर|वेतन|बकाया|फर्जी|बायोमेट्रिक|हाजिरी|पीएफ|shikshak|vetan|salary\s*arrears|farzi\s*faculty|biometric|service\s*book|ஆசிரியர்|பேராசிரியர்|சம்பளம்|சம்பள\s*பாக்கி|போலி|பயோமெட்ரிக்|வருகை|aasiriyar|sambalam)", re.IGNORECASE),
+        "Faculty Salary & Qualification Norms",
+        "fake_faculty faculty_salary salary_arrears biometric_attendance pan_audit payroll"
+    ),
+    (
+        re.compile(r"(प्रयोगशाला|कंप्यूटर|लैब|उपकरण|पुस्तकालय|इमारत|कमी|सुविधा|prayogshala|lab\s*equipment|computer\s*shortfall|building\s*deficit|ஆய்வகம்|கணினி|ஆய்வக\s*பற்றாக்குறை|கட்டிடம்|நூலகம்|வசதி\s*இல்லை)", re.IGNORECASE),
+        "Infrastructure & Lab Deficit",
+        "infrastructure_deficit laboratory_shortfall computing_terminals equipment library"
+    ),
+    (
+        re.compile(r"(रैगिंग|उत्पीड़न|प्रताड़ना|हॉस्टल|छात्रावास|सुरक्षा|धमकी|वार्डन|ragging|harassment|hostel\s*safety|warden|bullying|கேலி\s*வதை|கொடுமை|விடுதி|பாதுகாப்பு|அச்சுறுத்தல்|வார்டன்|keli\s*vadhai|kodumai)", re.IGNORECASE),
+        "Hostel & Campus Safety / Ragging",
+        "ragging hostel_safety student_harassment proctorial_squad night_warden"
+    ),
+]
+
+def detect_language(text: str) -> str:
+    """Detects whether text is in Hindi (Devanagari), Tamil, or English/Romanized."""
+    if not text:
+        return "en"
+    if re.search(r"[\u0900-\u097F]", text):
+        return "hi"
+    if re.search(r"[\u0B80-\u0BFF]", text):
+        return "ta"
+    return "en"
+
 def _normalize_text(text: str) -> str:
-    return re.sub(r"[^a-z0-9\s]", " ", (text or "").lower()).strip()
+    # Preserve unicode characters for Devanagari and Tamil while stripping punctuation
+    cleaned = re.sub(r"[^\w\s\u0900-\u097F\u0B80-\u0BFF]", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 def _distinctive_tokens(text: str) -> List[str]:
     norm = _normalize_text(text)
-    return [t for t in norm.split() if len(t) >= 2 and t not in INSTITUTION_STOPWORDS]
+    tokens = []
+    for t in norm.split():
+        if len(t) >= 2 and t not in INSTITUTION_STOPWORDS and t not in HINDI_STOPWORDS and t not in TAMIL_STOPWORDS:
+            tokens.append(t)
+    return tokens
+
+def cross_lingual_semantic_expansion(text: str) -> Tuple[str, str, Optional[str]]:
+    """
+    Expands multilingual complaint text (Hindi, Tamil, Hinglish, Tanglish) into canonical
+    regulatory concept tokens and predicts matching AICTE category.
+    Returns: (expanded_text, detected_lang, predicted_category)
+    """
+    lang = detect_language(text)
+    expanded_parts = [_normalize_text(text)]
+    predicted_cat = None
+
+    for pattern, category, canonical_tokens in MULTILINGUAL_CONCEPT_MAP:
+        if pattern.search(text):
+            expanded_parts.append(canonical_tokens)
+            if not predicted_cat:
+                predicted_cat = category
+
+    return " ".join(expanded_parts), lang, predicted_cat
 
 def jaro_winkler_similarity(s1: str, s2: str) -> float:
     """Returns Jaro-Winkler similarity on a 0..100 scale."""
@@ -148,59 +228,42 @@ def distinctive_token_set_score(query: str, target_name: str, aliases: List[str]
         if al_norm == q_norm or (len(al_norm) >= 4 and al_norm in q_norm):
             return 94.5, f"Verified Institution Alias/Acronym Match ('{alias}')"
         al_jw = jaro_winkler_similarity(q_norm, al_norm)
-        if al_jw >= 91.0:
-            return round(al_jw, 1), f"High-Confidence Fuzzy Alias Match ('{alias}', {al_jw:.1f}%)"
+        if al_jw >= 88.0:
+            return al_jw, f"High-Confidence Alias Fuzzy Match ('{alias}')"
 
-    # 2. Compare distinctive tokens against institution's distinctive tokens
-    inst_tokens = _distinctive_tokens(f"{target_name} {' '.join(aliases)} {city}")
-    if not inst_tokens:
-        return 0.0, "Target has no distinctive tokens"
+    # 2. Check full target name Jaro-Winkler
+    target_norm = _normalize_text(target_name)
+    jw_full = jaro_winkler_similarity(q_norm, target_norm)
+    if jw_full >= 92.0:
+        return jw_full, "High-Confidence Jaro-Winkler Full Name Match"
 
-    matched_weight = 0.0
-    matched_terms: List[str] = []
-    for qt in q_tokens:
-        best_tok_sim = 0.0
-        for it in inst_tokens:
-            if qt == it:
-                sim = 100.0
-            elif len(qt) >= 4 and len(it) >= 4:
-                sim = max(jaro_winkler_similarity(qt, it), levenshtein_ratio(qt, it))
-            else:
-                sim = 0.0
-            if sim > best_tok_sim:
-                best_tok_sim = sim
-        if best_tok_sim >= 86.0:
-            matched_weight += (best_tok_sim / 100.0)
-            matched_terms.append(qt)
+    # 3. Token-Set Analysis excluding generic stopwords
+    target_tokens = _distinctive_tokens(target_name)
+    if not target_tokens:
+        return 0.0, "Target institution has no distinctive tokens"
 
-    if not matched_terms:
-        return 0.0, "No distinctive institution tokens matched"
+    matched_terms = [qt for qt in q_tokens if any(jaro_winkler_similarity(qt, tt) >= 86.0 for tt in target_tokens)]
+    token_overlap_ratio = len(matched_terms) / max(1, len(target_tokens))
 
-    # Precision & recall over distinctive tokens
-    precision = matched_weight / len(q_tokens)
-    target_core_tokens = _distinctive_tokens(target_name)
-    recall_denom = max(1, len(target_core_tokens))
-    recall = min(1.0, matched_weight / recall_denom)
+    # Reject matches if core distinctive root is missing
+    if len(matched_terms) == 0:
+        return 0.0, "False-Positive Rejection: No distinctive tokens matched"
 
-    f1_score = (2 * precision * recall / (precision + recall)) * 100.0 if (precision + recall) > 0 else 0.0
+    city_norm = _normalize_text(city) if city else ""
+    city_in_query = bool(city_norm and city_norm in q_norm)
+    pincode_in_query = bool(pincode and pincode in q_norm)
 
-    # Full-string Jaro-Winkler on distinctive token strings
-    q_dist_str = " ".join(sorted(q_tokens))
-    t_dist_str = " ".join(sorted(target_core_tokens))
-    jw_dist = jaro_winkler_similarity(q_dist_str, t_dist_str)
+    if len(matched_terms) == 1 and len(target_tokens) > 1 and not (city_in_query or pincode_in_query):
+        return 45.0, "False-Positive Rejection: Insufficient distinctive token overlap without geographic anchor"
 
-    combined = (0.65 * f1_score) + (0.35 * jw_dist)
+    jw_score = jaro_winkler_similarity(" ".join(matched_terms), " ".join(target_tokens))
+    lev_score = levenshtein_ratio(" ".join(matched_terms), " ".join(target_tokens))
 
-    # Geographic / Pincode Anchor Bonus (only applies if at least 1 non-city distinctive token matched)
-    city_norm = _normalize_text(city)
-    non_city_matches = [m for m in matched_terms if m != city_norm and m != pincode]
-    if not non_city_matches:
-        # Prevent matching two different colleges solely because both are in "Chennai" or "Bengaluru"
-        return min(combined, 42.0), "Only city/location matched; distinctive institution name mismatch"
+    combined = (0.50 * (token_overlap_ratio * 100.0)) + (0.35 * jw_score) + (0.15 * lev_score)
 
-    if pincode and pincode in q_norm:
+    if pincode_in_query:
         combined = min(98.5, combined + 14.0)
-    elif city_norm and city_norm in q_norm:
+    elif city_in_query:
         combined = min(97.5, combined + 8.5)
 
     return round(combined, 1), f"Fuzzy Entity Resolution (Matched tokens: {', '.join(matched_terms)})"
@@ -208,14 +271,16 @@ def distinctive_token_set_score(query: str, target_name: str, aliases: List[str]
 def tfidf_cosine_similarity(text_a: str, text_b: str) -> float:
     """
     Computes TF-IDF weighted word + character 3-gram cosine similarity (0..100)
-    between two complaint descriptions.
+    between two complaint descriptions with multilingual concept expansion.
     """
-    tokens_a = [t for t in _normalize_text(text_a).split() if len(t) > 2 and t not in CONTENT_STOPWORDS]
-    tokens_b = [t for t in _normalize_text(text_b).split() if len(t) > 2 and t not in CONTENT_STOPWORDS]
+    exp_a, _, _ = cross_lingual_semantic_expansion(text_a)
+    exp_b, _, _ = cross_lingual_semantic_expansion(text_b)
+
+    tokens_a = [t for t in exp_a.split() if len(t) > 2 and t not in CONTENT_STOPWORDS and t not in HINDI_STOPWORDS and t not in TAMIL_STOPWORDS]
+    tokens_b = [t for t in exp_b.split() if len(t) > 2 and t not in CONTENT_STOPWORDS and t not in HINDI_STOPWORDS and t not in TAMIL_STOPWORDS]
     if not tokens_a or not tokens_b:
         return 0.0
 
-    # Include word stems (prefix-5) + full words to capture morphological variants (refund/refunded, admission/admissions)
     feats_a = tokens_a + [t[:5] for t in tokens_a if len(t) >= 5]
     feats_b = tokens_b + [t[:5] for t in tokens_b if len(t) >= 5]
 
@@ -223,7 +288,6 @@ def tfidf_cosine_similarity(text_a: str, text_b: str) -> float:
     vec_a: Dict[str, float] = {}
     vec_b: Dict[str, float] = {}
     for term in vocab:
-        # Smooth IDF across the pair + domain specificity boost for longer technical words
         weight = 1.0 + min(0.8, len(term) / 10.0)
         vec_a[term] = feats_a.count(term) * weight
         vec_b[term] = feats_b.count(term) * weight
@@ -302,16 +366,12 @@ class CrossBureauOverlapEngine:
 
         best_inst = None
         best_score = 0.0
-        best_reason = "Below 78% fuzzy match threshold"
+        best_method = ""
 
         for inst in institutions:
-            aliases_raw = inst.get("aliases", [])
-            if isinstance(aliases_raw, str):
-                aliases = [a.strip() for a in aliases_raw.split("|") if a.strip()]
-            else:
-                aliases = list(aliases_raw)
-
-            score, reason = distinctive_token_set_score(
+            aliases_raw = inst.get("aliases", "")
+            aliases = [a.strip() for a in aliases_raw.split("|") if a.strip()] if isinstance(aliases_raw, str) else list(aliases_raw or [])
+            score, method = distinctive_token_set_score(
                 query=raw_name,
                 target_name=inst["name"],
                 aliases=aliases,
@@ -321,42 +381,23 @@ class CrossBureauOverlapEngine:
             if score > best_score:
                 best_score = score
                 best_inst = inst
-                best_reason = f"{reason} -> Canonical PID {inst['pid']}"
+                best_method = method
 
-        if best_inst and best_score >= self.fuzzy_threshold:
-            return {
-                "matched": True,
-                "institution": best_inst,
-                "confidence": best_score,
-                "threshold": self.fuzzy_threshold,
-                "method": best_reason
-            }
-
+        is_match = best_score >= self.fuzzy_threshold
         return {
-            "matched": False,
-            "institution": None,
+            "matched": is_match,
+            "institution": best_inst if is_match else None,
             "confidence": best_score,
             "threshold": self.fuzzy_threshold,
-            "method": f"Rejected (Best candidate score {best_score:.1f}% < threshold {self.fuzzy_threshold:.1f}%)"
+            "method": best_method if is_match else f"No match exceeded {self.fuzzy_threshold}% threshold (Top candidate: {best_inst['name'] if best_inst else 'None'} @ {best_score}%)"
         }
 
     def evaluate_case_pair_content_overlap(
-        self,
-        case_a: Dict[str, Any],
-        case_b: Dict[str, Any],
-        entity_confidence: float = 100.0
+        self, case_a: Dict[str, Any], case_b: Dict[str, Any], entity_confidence: float = 100.0
     ) -> Dict[str, Any]:
-        """
-        Computes multi-factor overlap between two cases combining:
-        - Institution Entity Confidence (45%)
-        - Category & Complaint Text TF-IDF Similarity (35%)
-        - Temporal Proximity of Receipt Dates (20%)
-        """
         cat_sim = category_similarity(case_a.get("category", ""), case_b.get("category", ""))
-        text_a = f"{case_a.get('category', '')} {case_a.get('description', '')} {case_a.get('last_action', '')}"
-        text_b = f"{case_b.get('category', '')} {case_b.get('description', '')} {case_b.get('last_action', '')}"
-        text_sim = tfidf_cosine_similarity(text_a, text_b)
-        content_combined = round(0.55 * cat_sim + 0.45 * text_sim, 1)
+        text_sim = tfidf_cosine_similarity(case_a.get("description", ""), case_b.get("description", ""))
+        content_combined = round((0.40 * cat_sim) + (0.60 * text_sim), 1)
         temp_sim = temporal_proximity_score(case_a.get("receipt_date", ""), case_b.get("receipt_date", ""))
 
         composite_score = round(
@@ -389,6 +430,12 @@ class CrossBureauOverlapEngine:
         ]
         bureaus = sorted(list({c.get("bureau") for c in inst_cases if c.get("bureau")} | ({receiving_bureau} if receiving_bureau else set())))
         has_overlap = len(bureaus) > 1 or (len(inst_cases) > 0 and receiving_bureau in [c.get("bureau") for c in inst_cases])
+
+        # If incoming category is missing, attempt auto-classification from description
+        if not incoming_category and incoming_description:
+            _, _, pred_cat = cross_lingual_semantic_expansion(incoming_description)
+            if pred_cat:
+                incoming_category = pred_cat
 
         virtual_incoming = {
             "category": incoming_category or (inst_cases[0].get("category", "") if inst_cases else ""),
