@@ -154,3 +154,4 @@ def get_institution_risk_leaderboard(limit: int = 50, region: Optional[str] = No
 
     leaderboard.sort(key=lambda x: (x["risk_score"], x["active_cases"]), reverse=True)
     return leaderboard[:limit]
+

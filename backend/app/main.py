@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from app.core.config import settings
 from app.core.database import db
-from app.api.v1.endpoints import auth, institutions, cases, overlaps, alerts, reports
+from app.api.v1.endpoints import auth, institutions, cases, overlaps, alerts, reports, chat
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,6 +38,7 @@ app.include_router(cases.router, prefix="/api/v1/cases", tags=["Complaint Case T
 app.include_router(overlaps.router, prefix="/api/v1/overlaps", tags=["Cross-Bureau Overlap Engine"])
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["Live SLA & Overlap Alerts"])
 app.include_router(reports.router, prefix="/api/v1/reports", tags=["MIS Reports & Exports"])
+app.include_router(chat.router, prefix="/api/v1/chat", tags=["AI Chatbot (Gemini)"])
 
 @app.get("/", include_in_schema=False)
 def serve_index():

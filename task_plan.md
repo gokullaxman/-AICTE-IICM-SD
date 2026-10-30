@@ -1,54 +1,65 @@
-# AICTE IICM-SD Production Upgrade — Task Plan
-Date: 2026-10-30
-Goal: Implement 8 Production Features for AICTE Integrated Institution Complaint Monitoring & Status Dashboard (IICM-SD)
+# AICTE IICM-SD — Secure Gemini AI Chatbot Integration Task Plan
 
-## Requested Features Overview:
-1. Lead-Bureau designation and "hold" on conflicting actions
-2. Auto-escalation ladder on SLA breach
-3. Complaint intake API or webhook (Single-window external intake)
-4. Multilingual matching (Hindi, Tamil, Hinglish, Tanglish)
-5. Institution risk score engine & ranked leaderboard
-6. Email and SMS alerts dispatch service with audit feed
-7. Tamper-evident audit log (cryptographic SHA-256 hash chaining)
-8. Complainant personal data masking by role (DPDP Act 2023 compliance)
+## Overview
+Implement a lightweight, production-oriented AI chatbot powered by Google's official Gemini API (`google-genai` SDK) into the AICTE Integrated Institution Complaint Monitoring & Status Dashboard (IICM-SD).
 
-## Execution Phases:
+## Implementation Rules
+1. Work directly in the existing repository.
+2. Phase 1 (Floating Chatbot & Gemini Integration) must be complete, tested, and verified before starting Phase 2.
+3. Phase 2 (Dashboard-Aware Assistant) connects to existing authorized backend services without compromising security, RBAC, or DPDP Act 2023 PII masking.
+4. Maintain documentation integrity and 100% regression test pass rate.
 
-### Phase 1: Planning, Schema Updates & Core Services <!-- id: 1 -->
-- [x] Create `task_plan.md`, `findings.md`, and `progress.md` <!-- id: 1.1 -->
-- [x] Update SQLite schema & migration files (`001_sqlite_schema.sql`, `001_initial_schema.sql`) to include:
-  - `institutions`: `lead_bureau`, `action_hold`, `risk_score`, `risk_tier`
-  - `complaint_cases`: `escalation_level`, `escalation_status`, `complainant_phone`, `complainant_email`, `external_ref_id`, `source_portal`, `language`
-  - `audit_logs`: `prev_hash`, `entry_hash`
-  - `notification_dispatches`: table for SMS & Email dispatches
-- [x] Run migration / schema alteration on current SQLite DB safely <!-- id: 1.2 -->
+---
 
-### Phase 2: Backend Architecture & Implementation <!-- id: 2 -->
-- [x] Feature 7: Implement SHA-256 hash-chained tamper-evident audit logging in `database.py` and verification endpoint in `reports.py` <!-- id: 2.1 -->
-- [x] Feature 8: Implement DPDP Act PII masking (names, emails, phones) in `security.py` and unmask API with audit logging <!-- id: 2.2 -->
-- [x] Feature 4: Implement multilingual NLP (Hindi, Tamil, phonetic & keyword cross-lingual normalization) in `overlap_engine.py` <!-- id: 2.3 -->
-- [x] Feature 5: Implement Institution Risk Score computation engine (frequency, severity, SLA breaches, multi-bureau recurrence) <!-- id: 2.4 -->
-- [x] Feature 1: Implement Lead-Bureau designation and Action Hold enforcement preventing conflicting actions by non-lead bureaus <!-- id: 2.5 -->
-- [x] Feature 2: Implement Auto-Escalation Ladder service promoting cases across 4 tiers based on overdue SLA days <!-- id: 2.6 -->
-- [x] Feature 3: Implement Single-Window Complaint Intake Webhook API (`POST /api/v1/cases/webhook` & `/intake`) with signature check and auto-overlap detection <!-- id: 2.7 -->
-- [x] Feature 6: Implement Email & SMS notification dispatch service with dispatch logs and manual trigger API <!-- id: 2.8 -->
+## Phases & Tasks
 
-### Phase 3: Comprehensive Test Suite <!-- id: 3 -->
-- [x] Expand `backend/tests/test_overlap_and_api.py` with tests for all 8 features <!-- id: 3.1 -->
-- [x] Run pytest to verify all existing and new tests pass cleanly (25/25 passing) <!-- id: 3.2 -->
+### Step 1: Repository Inspection & Architectural Baseline <!-- id: step1 -->
+- [x] Inspect FastAPI application initialization (`backend/app/main.py`)
+- [x] Inspect frontend structure, login flow, theme support, entry points (`frontend/public/index.html` vs `aicte_complaint_monitoring_dashboard.html`)
+- [x] Inspect JWT authentication, claims, and RBAC (`backend/app/core/security.py`, `auth.py`)
+- [x] Inspect complaint API schemas, authorization, and DPDP PII masking (`cases.py`, `security.py`)
+- [x] Inspect institutions, alerts, overlaps, reports API contracts
+- [x] Inspect database abstraction and query methods (`database.py`)
+- [x] Inspect deployment files (`docker-compose.yml`, `deploy/nginx/default.conf`, Dockerfile, dependencies)
+- [x] Inspect test suite (`test_overlap_and_api.py`)
+- [x] Verify live Gemini SDK and API key availability (`gemini-3.1-flash-lite`)
 
-### Phase 4: Frontend UI Redesign Integration <!-- id: 4 -->
-- [x] Update `frontend/public/index.html` and standalone dashboard to display:
-  - Lead-Bureau coordination status & Action Hold warnings
-  - Auto-escalation level chips and ladder progress
-  - Institution Risk Scores & Top Risk Institutions card / ranking
-  - Webhook intake simulation / test tool
-  - Multilingual intake testing (Hindi & Tamil)
-  - SMS & Email notification dispatch log drawer
-  - Tamper-evident audit chain verification badge
-  - DPDP Act PII masking with role-based unmask button
-- [x] Verify frontend in browser / API (`http://localhost:8000`) <!-- id: 4.1 -->
+### Step 2: Phase 1 — Floating Chatbot UI & Secure Backend <!-- id: step2 -->
+- [x] Add Gemini configuration to `backend/app/core/config.py`
+- [x] Update `.env.example` with Gemini configuration placeholders
+- [x] Create Pydantic chat schemas in `backend/app/schemas/payloads.py` (`ChatMessageRequest`, `ChatMessageResponse`, `ChatMessageItem`)
+- [x] Create `backend/app/services/gemini_chat_service.py` with official `google-genai` client, rate limiting, and safe error conversion
+- [x] Create `backend/app/api/v1/endpoints/chat.py` with `POST /api/v1/chat/message`, JWT authentication, rate limiting, and validation
+- [x] Register chat router in `backend/app/main.py`
+- [x] Implement responsive floating chatbot widget in `frontend/public/index.html`:
+  - Fixed bottom-right launcher button
+  - Slide-up chat panel with header, status, minimize/close, clear chat
+  - Scrollable conversation area with user/assistant bubbles, loading indicator, retry on error
+  - Safe text sanitization (no raw HTML rendering)
+  - Dark/light mode theme support
+- [x] Synchronize `aicte_complaint_monitoring_dashboard.html`
 
-### Phase 5: Documentation & Git Push <!-- id: 5 -->
-- [x] Commit all changes and push to GitHub repository `https://github.com/gokullaxman/-AICTE-IICM-SD` <!-- id: 5.2 -->
-- [x] Present completed feature walkthrough and status to user <!-- id: 5.3 -->
+### Step 3: Phase 1 Automated Tests & Regression Suite <!-- id: step3 -->
+- [x] Create `backend/tests/test_chat_phase1.py` with mocked Gemini SDK covering all 15 Phase 1 test cases
+- [x] Run test suite: verify new chat tests pass and all 25 existing tests pass cleanly (100%)
+
+### Step 4: Phase 1 End-to-End Verification <!-- id: step4 -->
+- [x] Verify live chat request/response flow against live server
+- [x] Verify error states, rate limiting, and missing key fallback
+- [x] Confirm Phase 1 criteria met before proceeding to Phase 2
+
+### Step 5: Phase 2 — Dashboard-Aware Assistant Context Layer <!-- id: step5 -->
+- [x] Design controlled context retrieval layer in `backend/app/services/gemini_chat_service.py` (`DashboardContextRetriever`)
+- [x] Connect to existing backend services: cases, institutions, SLA alerts, overlaps, risk engine, audit chain
+- [x] Enforce strict RBAC and DPDP Act 2023 complainant PII masking on retrieved evidence
+- [x] Implement prompt injection defense (evidence treated as untrusted data, read-only guardrails)
+
+### Step 6: Phase 2 Automated Tests <!-- id: step6 -->
+- [x] Create `backend/tests/test_chat_phase2.py` testing authorization, data grounding, PII masking, and prompt injection defense
+- [x] Run full test suite (Phase 1 [15] + Phase 2 [15] + Existing 25 tests = 55 tests passed 100%)
+
+### Step 7: Packaging, Deployment & Documentation <!-- id: step7 -->
+- [x] Create `backend/requirements.txt`, root `requirements.txt`, and `backend/Dockerfile`
+- [x] Verify Docker Compose and Nginx configuration
+- [x] Document setup, environment variables, and usage in `README.md`
+- [x] Final implementation report and Git push

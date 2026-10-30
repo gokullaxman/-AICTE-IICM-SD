@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List, Literal
 import re
 import pydantic
 from pydantic import BaseModel, Field
@@ -106,3 +106,18 @@ class PIIUnmaskRequest(BaseModel):
 class NotificationDispatchTriggerRequest(BaseModel):
     channel: str = _regex_field("ALL", r"^(ALL|EMAIL|SMS)$")
     custom_message: Optional[str] = Field(default=None, max_length=1000)
+
+class ChatMessageItem(BaseModel):
+    role: str = _regex_field(..., r"^(user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=2000)
+
+class ChatMessageRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000)
+    history: Optional[List[ChatMessageItem]] = Field(default_factory=list)
+    conversation_id: Optional[str] = Field(default=None, max_length=64)
+
+class ChatMessageResponse(BaseModel):
+    reply: str
+    conversation_id: Optional[str] = None
+    category: Optional[str] = None
+    sources: Optional[List[str]] = None

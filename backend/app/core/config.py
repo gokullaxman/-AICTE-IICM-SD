@@ -1,6 +1,17 @@
 import os
 from typing import List
 
+try:
+    from dotenv import load_dotenv
+    root_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.env"))
+    backend_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.env"))
+    if os.path.exists(root_env):
+        load_dotenv(root_env)
+    if os.path.exists(backend_env):
+        load_dotenv(backend_env)
+except Exception:
+    pass
+
 class Settings:
     PROJECT_NAME: str = "AICTE Integrated Institution Complaint Monitoring & Status Dashboard (IICM-SD)"
     VERSION: str = "3.1.0"
@@ -26,6 +37,16 @@ class Settings:
         os.path.abspath(os.path.join(os.path.dirname(__file__), "../../uploads"))
     )
     MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))) # 10 MB
+
+    # Gemini AI Chatbot Settings (Official google-genai SDK)
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    GEMINI_CHAT_ENABLED: bool = os.getenv("GEMINI_CHAT_ENABLED", "true").lower() in ("true", "1", "yes")
+    GEMINI_REQUEST_TIMEOUT: int = int(os.getenv("GEMINI_REQUEST_TIMEOUT", "30"))
+    GEMINI_MAX_INPUT_CHARS: int = int(os.getenv("GEMINI_MAX_INPUT_CHARS", "2000"))
+    GEMINI_MAX_HISTORY_MESSAGES: int = int(os.getenv("GEMINI_MAX_HISTORY_MESSAGES", "10"))
+    GEMINI_MAX_OUTPUT_TOKENS: int = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "1024"))
+    GEMINI_RATE_LIMIT_PER_MINUTE: int = int(os.getenv("GEMINI_RATE_LIMIT_PER_MINUTE", "30"))
 
     @property
     def allowed_origins(self) -> List[str]:

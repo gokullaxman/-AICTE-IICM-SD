@@ -135,3 +135,4 @@ def list_dispatches(
     sql += " ORDER BY dispatched_at DESC LIMIT ?"
     params.append(limit)
     return db.fetch_all(sql, tuple(params))
+

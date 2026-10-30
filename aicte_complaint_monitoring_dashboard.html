@@ -1604,6 +1604,86 @@
     </div>
   </div>
 
+  <!-- ======================================================== -->
+  <!-- FLOATING AI ASSISTANT CHATBOT (POWERED BY GEMINI)       -->
+  <!-- ======================================================== -->
+  <!-- Launcher Button -->
+  <div id="aiChatLauncherContainer" class="fixed bottom-6 right-6 z-40 no-print">
+    <button type="button" id="btnToggleAiChat" aria-label="Open IICM Assistant Chatbot" class="flex items-center gap-2.5 px-4 py-3 rounded-full bg-gradient-to-r from-blue-700 via-indigo-700 to-slate-900 text-white shadow-xl hover:shadow-2xl hover:-translate-y-0.5 active:translate-y-0 transition-all group border border-blue-400/30 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+      <span class="relative flex h-3 w-3">
+        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+        <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+      </span>
+      <svg class="w-5 h-5 text-amber-300 group-hover:rotate-12 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+      <span class="text-xs font-semibold tracking-wide">IICM Assistant</span>
+      <span class="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono bg-blue-900/80 rounded border border-blue-600/60 text-blue-200">⌘J</span>
+    </button>
+  </div>
+
+  <!-- Chat Panel -->
+  <div id="aiChatPanel" role="dialog" aria-modal="true" aria-labelledby="aiChatTitle" class="fixed bottom-24 right-4 sm:right-6 z-50 hidden w-[calc(100vw-2rem)] sm:w-[420px] h-[560px] max-h-[82vh] bg-[var(--bg-surface)] border border-[var(--border-default)] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-scale-up no-print">
+    <!-- Chat Header -->
+    <div class="bg-slate-900 text-white p-3.5 border-b border-slate-800 flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-amber-300 shadow-2xs font-bold">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-1.5">
+            <h3 id="aiChatTitle" class="text-xs font-semibold text-white">IICM Assistant</h3>
+            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-blue-950 text-blue-300 border border-blue-800">Gemini Flash</span>
+          </div>
+          <p class="text-[10px] text-slate-400">AICTE Regulatory &amp; Grievance Assistant</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-1">
+        <button type="button" id="btnAiChatClear" aria-label="Clear Chat Conversation" title="Clear Chat History" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+        </button>
+        <button type="button" id="btnAiChatClose" aria-label="Close Assistant Panel" title="Close Panel (Esc)" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Scrollable Messages Area -->
+    <div id="aiChatMessagesArea" class="flex-1 p-3.5 overflow-y-auto space-y-3 custom-scrollbar text-xs">
+      <!-- Welcome Message Bubble -->
+      <div class="flex items-start gap-2.5">
+        <div class="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 text-[10px] font-bold mt-0.5">AI</div>
+        <div class="bg-slate-100 dark:bg-slate-800/80 text-slate-800 dark:text-slate-200 rounded-2xl rounded-tl-xs p-3 border border-slate-200 dark:border-slate-700/80 max-w-[90%] shadow-2xs space-y-1">
+          <div class="font-semibold text-slate-900 dark:text-white text-[11px]">Namaste Officer!</div>
+          <p class="text-xs text-slate-700 dark:text-slate-300">I am your official AICTE IICM Assistant powered by Google Gemini. Ask me anything about regulatory SLA timelines, Section 10(1) coordination, grievance workflows, or dashboard metrics.</p>
+          <div class="flex flex-wrap gap-1.5 pt-1">
+            <button type="button" class="chat-quick-prompt px-2 py-0.5 rounded text-[11px] bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-slate-600 transition">What does this dashboard do?</button>
+            <button type="button" class="chat-quick-prompt px-2 py-0.5 rounded text-[11px] bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-slate-600 transition">Explain SLA escalation ladder</button>
+            <button type="button" class="chat-quick-prompt px-2 py-0.5 rounded text-[11px] bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-slate-600 transition">How does overlap engine work?</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Error Banner (Hidden by default) -->
+    <div id="aiChatErrorBanner" class="hidden mx-3 mb-2 p-2.5 rounded-lg bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 text-red-900 dark:text-red-200 text-xs flex items-center justify-between gap-2">
+      <span id="aiChatErrorMessage" class="truncate">An error occurred.</span>
+      <button type="button" id="btnAiChatRetry" class="px-2 py-0.5 bg-red-600 text-white rounded text-[11px] font-semibold hover:bg-red-700 shrink-0">Retry</button>
+    </div>
+
+    <!-- Input Footer -->
+    <form id="aiChatForm" class="p-3 bg-slate-50 dark:bg-slate-900/80 border-t border-[var(--border-default)] shrink-0 space-y-1.5">
+      <div class="relative flex items-center">
+        <textarea id="aiChatInput" rows="1" maxlength="2000" placeholder="Ask IICM Assistant... (Enter to send, Shift+Enter for newline)" class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-3 pr-10 py-2 text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600 resize-none max-h-24 custom-scrollbar"></textarea>
+        <button type="submit" id="btnAiChatSend" aria-label="Send Message" class="absolute right-1.5 p-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-40 disabled:cursor-not-allowed transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+        </button>
+      </div>
+      <div class="flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500 font-mono px-0.5">
+        <span>Press Enter to send</span>
+        <span id="aiChatCharCount">0 / 2000</span>
+      </div>
+    </form>
+  </div>
+
   <!-- Notification Toast Container -->
   <div id="toastContainer" aria-live="polite" class="fixed bottom-5 right-5 z-50 space-y-2 max-w-sm w-full no-print"></div>
 
@@ -4317,6 +4397,204 @@
       showToast('🔓 Complainant PII Unmasked', `Access granted pursuant to DPDP Act Section 14. Transaction sealed into tamper-evident audit ledger.`, 'info');
     }
 
+        // =========================================================================
+    // IICM AI ASSISTANT CHATBOT LOGIC (GEMINI INTEGRATION)
+    // =========================================================================
+    let aiChatHistory = [];
+    let aiChatPending = false;
+    let aiLastFailedPrompt = null;
+
+    function sanitizeChatHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function renderFormattedAiReply(rawText) {
+      const safe = sanitizeChatHtml(rawText);
+      return safe
+        .replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-slate-900 dark:text-white">$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em class="italic">$1</em>')
+        .replace(/`([^`]+)`/g, '<code class="font-mono text-[11px] bg-slate-200 dark:bg-slate-700 px-1 py-0.5 rounded text-blue-700 dark:text-blue-300">$1</code>')
+        .replace(/\n\n/g, '<br><br>')
+        .replace(/\n/g, '<br>');
+    }
+
+    function toggleAiChatPanel(forceOpen = null) {
+      const panel = document.getElementById('aiChatPanel');
+      if (!panel) return;
+      const isOpen = !panel.classList.contains('hidden');
+      const shouldOpen = forceOpen !== null ? forceOpen : !isOpen;
+      if (shouldOpen) {
+        panel.classList.remove('hidden');
+        const input = document.getElementById('aiChatInput');
+        if (input) setTimeout(() => input.focus(), 100);
+      } else {
+        panel.classList.add('hidden');
+      }
+    }
+
+    function clearAiChatConversation() {
+      aiChatHistory = [];
+      aiLastFailedPrompt = null;
+      const msgsArea = document.getElementById('aiChatMessagesArea');
+      const errorBanner = document.getElementById('aiChatErrorBanner');
+      if (errorBanner) errorBanner.classList.add('hidden');
+      if (msgsArea) {
+        msgsArea.innerHTML = `
+          <div class="flex items-start gap-2.5">
+            <div class="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 text-[10px] font-bold mt-0.5">AI</div>
+            <div class="bg-slate-100 dark:bg-slate-800/80 text-slate-800 dark:text-slate-200 rounded-2xl rounded-tl-xs p-3 border border-slate-200 dark:border-slate-700/80 max-w-[90%] shadow-2xs space-y-1">
+              <div class="font-semibold text-slate-900 dark:text-white text-[11px]">Conversation Cleared</div>
+              <p class="text-xs text-slate-700 dark:text-slate-300">Chat history cleared. How can I assist you with AICTE grievance monitoring today?</p>
+              <div class="flex flex-wrap gap-1.5 pt-1">
+                <button type="button" class="chat-quick-prompt px-2 py-0.5 rounded text-[11px] bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-slate-600 transition">What does this dashboard do?</button>
+                <button type="button" class="chat-quick-prompt px-2 py-0.5 rounded text-[11px] bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-slate-600 transition">Explain SLA escalation ladder</button>
+              </div>
+            </div>
+          </div>
+        `;
+        bindChatQuickPrompts();
+      }
+    }
+
+    function showAiChatError(message, retryPrompt) {
+      aiLastFailedPrompt = retryPrompt;
+      const banner = document.getElementById('aiChatErrorBanner');
+      const msgEl = document.getElementById('aiChatErrorMessage');
+      if (banner && msgEl) {
+        msgEl.textContent = message;
+        banner.classList.remove('hidden');
+      }
+    }
+
+    async function sendChatMessage(promptText) {
+      const text = (promptText || '').trim();
+      if (!text || aiChatPending) return;
+
+      const msgsArea = document.getElementById('aiChatMessagesArea');
+      const inputEl = document.getElementById('aiChatInput');
+      const sendBtn = document.getElementById('btnAiChatSend');
+      const errorBanner = document.getElementById('aiChatErrorBanner');
+
+      if (errorBanner) errorBanner.classList.add('hidden');
+      aiLastFailedPrompt = null;
+      aiChatPending = true;
+      if (sendBtn) sendBtn.disabled = true;
+      if (inputEl) {
+        inputEl.value = '';
+        inputEl.style.height = 'auto';
+        const charCountEl = document.getElementById('aiChatCharCount');
+        if (charCountEl) charCountEl.textContent = '0 / 2000';
+      }
+
+      // 1. Render User Message Bubble
+      const userBubble = document.createElement('div');
+      userBubble.className = 'flex items-start justify-end gap-2.5';
+      userBubble.innerHTML = `
+        <div class="bg-blue-600 text-white rounded-2xl rounded-tr-xs px-3.5 py-2.5 max-w-[85%] shadow-2xs text-xs whitespace-pre-wrap">${sanitizeChatHtml(text)}</div>
+        <div class="w-6 h-6 rounded-full bg-slate-900 text-white flex items-center justify-center shrink-0 text-[10px] font-bold mt-0.5">U</div>
+      `;
+      msgsArea.appendChild(userBubble);
+      msgsArea.scrollTop = msgsArea.scrollHeight;
+
+      // 2. Render Typing Indicator
+      const typingIndicator = document.createElement('div');
+      typingIndicator.id = 'aiChatTypingIndicator';
+      typingIndicator.className = 'flex items-start gap-2.5';
+      typingIndicator.innerHTML = `
+        <div class="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 text-[10px] font-bold mt-0.5">AI</div>
+        <div class="bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-2xl rounded-tl-xs px-3.5 py-2.5 border border-slate-200 dark:border-slate-700 shadow-2xs text-xs flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:0.2s]"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:0.4s]"></span>
+          <span class="text-[11px] font-mono text-slate-400 ml-1">Analyzing...</span>
+        </div>
+      `;
+      msgsArea.appendChild(typingIndicator);
+      msgsArea.scrollTop = msgsArea.scrollHeight;
+
+      // 3. Dispatch to backend API
+      try {
+        const payload = {
+          message: text,
+          history: aiChatHistory.slice(-10),
+          conversation_id: 'conv-' + (currentOfficer ? currentOfficer.user_id : 'hq')
+        };
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (jwtToken) {
+          headers['Authorization'] = `Bearer ${jwtToken}`;
+        }
+
+        const res = await fetch(`${apiBaseUrl}/chat/message`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(payload)
+        });
+
+        // Remove typing indicator
+        const ti = document.getElementById('aiChatTypingIndicator');
+        if (ti) ti.remove();
+
+        if (!res.ok) {
+          let errMsg = 'The AI service encountered an error.';
+          try {
+            const errJson = await res.json();
+            errMsg = errJson.detail || errMsg;
+          } catch (e) {}
+
+          showAiChatError(errMsg, text);
+          return;
+        }
+
+        const data = await res.json();
+        const reply = data.reply || 'No response generated.';
+
+        // Append to local history
+        aiChatHistory.push({ role: 'user', content: text });
+        aiChatHistory.push({ role: 'assistant', content: reply });
+        if (aiChatHistory.length > 20) aiChatHistory = aiChatHistory.slice(-20);
+
+        // Render Assistant Message Bubble
+        const aiBubble = document.createElement('div');
+        aiBubble.className = 'flex items-start gap-2.5';
+        const sourcesHtml = (data.sources && data.sources.length)
+          ? `<div class="mt-1.5 pt-1 border-t border-slate-200 dark:border-slate-700 text-[10px] text-blue-600 dark:text-blue-400 font-mono">Sources: ${sanitizeChatHtml(data.sources.join(', '))}</div>`
+          : '';
+
+        aiBubble.innerHTML = `
+          <div class="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 text-[10px] font-bold mt-0.5">AI</div>
+          <div class="bg-slate-100 dark:bg-slate-800/90 text-slate-800 dark:text-slate-200 rounded-2xl rounded-tl-xs px-3.5 py-2.5 max-w-[88%] border border-slate-200 dark:border-slate-700 shadow-2xs text-xs space-y-1">
+            <div>${renderFormattedAiReply(reply)}</div>
+            ${sourcesHtml}
+          </div>
+        `;
+        msgsArea.appendChild(aiBubble);
+        msgsArea.scrollTop = msgsArea.scrollHeight;
+
+      } catch (err) {
+        const ti = document.getElementById('aiChatTypingIndicator');
+        if (ti) ti.remove();
+        showAiChatError('Network connection failure. Unable to reach AI service.', text);
+      } finally {
+        aiChatPending = false;
+        if (sendBtn) sendBtn.disabled = false;
+      }
+    }
+
+    function bindChatQuickPrompts() {
+      document.querySelectorAll('.chat-quick-prompt').forEach(btn => {
+        btn.onclick = () => {
+          sendChatMessage(btn.textContent.trim());
+        };
+      });
+    }
+
     window.addEventListener('DOMContentLoaded', () => {
       const updateClock = () => {
         const d = getNowIst();
@@ -4330,7 +4608,7 @@
       // Global Escape key closes any open modal dialog
       window.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
-          ['modalCaseWorkflow', 'modalJointCoordination', 'modalNewComplaint', 'modalJwtLogin', 'modalManualLink', 'modalUnmaskPii'].forEach(id => {
+          ['modalCaseWorkflow', 'modalJointCoordination', 'modalNewComplaint', 'modalJwtLogin', 'modalManualLink', 'modalUnmaskPii', 'aiChatPanel'].forEach(id => {
             document.getElementById(id).classList.add('hidden');
           });
         }
@@ -4691,6 +4969,59 @@
 
       document.getElementById('btnOpenNewCaseModal').addEventListener('click', openNewComplaintModal);
       document.getElementById('btnCloseNewCaseModal').addEventListener('click', () => document.getElementById('modalNewComplaint').classList.add('hidden'));
+
+      // IICM AI Assistant Chatbot Listeners
+      const toggleChatBtn = document.getElementById('btnToggleAiChat');
+      if (toggleChatBtn) toggleChatBtn.addEventListener('click', () => toggleAiChatPanel());
+
+      const closeChatBtn = document.getElementById('btnAiChatClose');
+      if (closeChatBtn) closeChatBtn.addEventListener('click', () => toggleAiChatPanel(false));
+
+      const clearChatBtn = document.getElementById('btnAiChatClear');
+      if (clearChatBtn) clearChatBtn.addEventListener('click', clearAiChatConversation);
+
+      const retryChatBtn = document.getElementById('btnAiChatRetry');
+      if (retryChatBtn) {
+        retryChatBtn.addEventListener('click', () => {
+          if (aiLastFailedPrompt) sendChatMessage(aiLastFailedPrompt);
+        });
+      }
+
+      const chatForm = document.getElementById('aiChatForm');
+      const chatInput = document.getElementById('aiChatInput');
+
+      if (chatInput) {
+        chatInput.addEventListener('input', () => {
+          const charCountEl = document.getElementById('aiChatCharCount');
+          if (charCountEl) charCountEl.textContent = `${chatInput.value.length} / 2000`;
+          chatInput.style.height = 'auto';
+          chatInput.style.height = Math.min(96, chatInput.scrollHeight) + 'px';
+        });
+
+        chatInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendChatMessage(chatInput.value);
+          }
+        });
+      }
+
+      if (chatForm) {
+        chatForm.addEventListener('submit', (e) => {
+          e.preventDefault();
+          if (chatInput) sendChatMessage(chatInput.value);
+        });
+      }
+
+      bindChatQuickPrompts();
+
+      // Keyboard shortcut ⌘J / Ctrl+J to toggle AI Chatbot
+      window.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'j' || e.key === 'J')) {
+          e.preventDefault();
+          toggleAiChatPanel();
+        }
+      });
 
       // Feature 2: Auto-Escalation Ladder Trigger Buttons
       const runAutoEscalateDashBtn = document.getElementById('btnRunAutoEscalateDash');
