@@ -1,0 +1,34 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Git and IDE
+.git/
+.github/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

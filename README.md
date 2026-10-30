@@ -222,3 +222,41 @@ docker compose up --build -d
 - **Web Application**: `http://localhost:8080`
 - **FastAPI Backend**: `http://localhost:8000`
 - **PostgreSQL Database**: `localhost:5432`
+
+---
+
+## Deployment to Vercel (Production Ready)
+
+The application is structured for instant zero-config deployment to [Vercel](https://vercel.com):
+
+### Architecture on Vercel
+1. **Edge CDN Frontend**: The single-file government-grade dashboard is served directly from `public/index.html` across Vercel's global CDN (0ms cold start).
+2. **Serverless REST API**: Backend endpoints (`/api/v1/*`), health check (`/health`), and OpenAPI documentation (`/docs`) are executed via Python Serverless Functions through `api/index.py` configured in `vercel.json`.
+3. **Database Adaptation**: Automatically detects the serverless environment (`VERCEL=1`) and initializes the SQLite relational database in writable `/tmp/aicte_iicm.db` on cold start. Alternatively, configure a cloud PostgreSQL connection string via `DATABASE_URL` (e.g., Neon, Supabase, Vercel Postgres).
+4. **CORS & Preview URLs**: Dynamic origin regex automatically supports all `https://*.vercel.app` preview and production URLs without manual configuration.
+5. **Auto-Connecting Frontend**: The frontend automatically resolves `window.location.origin + '/api/v1'` on deployed domains.
+
+### Method 1: Git Integration (Recommended)
+1. Push this repository to GitHub:
+   ```bash
+   git push origin main
+   ```
+2. Navigate to [vercel.com/new](https://vercel.com/new) and import the repository.
+3. Keep the default settings (Framework: **Other**, Root Directory: `./`).
+4. In **Environment Variables**, set:
+   - `GEMINI_API_KEY`: *(Required for AI Chatbot)* Your Google Gemini API key.
+   - `JWT_SECRET`: *(Recommended)* A secure random string for signing officer session tokens.
+   - `DATABASE_URL`: *(Optional)* Remote PostgreSQL connection string (if using external DB). If omitted, serverless SQLite is used automatically.
+5. Click **Deploy**.
+
+### Method 2: Vercel CLI
+```bash
+# Install Vercel CLI
+npm install -g vercel
+
+# Deploy preview
+vercel
+
+# Deploy to production
+vercel --prod
+```

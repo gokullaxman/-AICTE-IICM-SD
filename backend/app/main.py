@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from app.core.config import settings
@@ -27,6 +27,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|.*\.vercel\.app)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
@@ -42,12 +43,36 @@ app.include_router(chat.router, prefix="/api/v1/chat", tags=["AI Chatbot (Gemini
 
 @app.get("/", include_in_schema=False)
 def serve_index():
+    candidates = [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../public/index.html")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/public/index.html")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../public/index.html")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../frontend/public/index.html")),
+        os.path.abspath(os.path.join(os.getcwd(), "public/index.html")),
+        os.path.abspath(os.path.join(os.getcwd(), "frontend/public/index.html")),
+        os.path.abspath(os.path.join(os.getcwd(), "aicte_complaint_monitoring_dashboard.html")),
+    ]
+    for cand in candidates:
+        if os.path.exists(cand):
+            return FileResponse(cand)
     index_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/public/index.html"))
     if not os.path.exists(index_path):
         index_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../frontend/public/index.html"))
     if os.path.exists(index_path):
         return FileResponse(index_path)
     return {"status": "healthy", "service": "AICTE-IICM-SD-API", "docs": "/docs"}
+
+@app.get("/index.html", include_in_schema=False)
+def serve_index_alias():
+    return serve_index()
+
+@app.get("/aicte_complaint_monitoring_dashboard.html", include_in_schema=False)
+def serve_dashboard_alias():
+    return serve_index()
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)
 
 @app.get("/health")
 def health_check():

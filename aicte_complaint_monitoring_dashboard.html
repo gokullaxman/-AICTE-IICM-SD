@@ -2623,7 +2623,15 @@
     // =========================================================================
     // JWT SESSION, RBAC & FASTAPI WIRE-UP
     // =========================================================================
-    let apiBaseUrl = 'http://localhost:8000/api/v1';
+    // Auto-detect deployment origin (Vercel / Cloud) or default to local development port 8000
+    let defaultApiBase = 'http://localhost:8000/api/v1';
+    if (typeof window !== 'undefined' && window.location && window.location.protocol.startsWith('http')) {
+      const host = window.location.hostname;
+      if (host !== 'localhost' && host !== '127.0.0.1') {
+        defaultApiBase = `${window.location.origin}/api/v1`;
+      }
+    }
+    let apiBaseUrl = defaultApiBase;
     let backendConnected = false;
     let jwtToken = null;
 
@@ -2714,7 +2722,7 @@
       const txt = document.getElementById('apiStatusText');
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 1200);
+        const timer = setTimeout(() => controller.abort(), 6000);
         const res = await fetch(`${apiBaseUrl.replace(/\/api\/v1$/, '')}/health`, { signal: controller.signal });
         clearTimeout(timer);
         if (res.ok) {
@@ -4166,6 +4174,10 @@
           document.getElementById('loginPasswordInput').value = u.pass;
         });
       });
+      const apiInput = document.getElementById('apiBaseUrlInput');
+      if (apiInput && (!apiInput.value || (apiInput.value.includes('localhost:8000') && apiBaseUrl !== 'http://localhost:8000/api/v1'))) {
+        apiInput.value = apiBaseUrl;
+      }
       document.getElementById('modalJwtLogin').classList.remove('hidden');
     }
 
@@ -4779,6 +4791,10 @@
         }
       });
 
+      const startupApiInput = document.getElementById('apiBaseUrlInput');
+      if (startupApiInput && apiBaseUrl !== 'http://localhost:8000/api/v1') {
+        startupApiInput.value = apiBaseUrl;
+      }
       resetCaseFiltersSilent();
       probeAndSyncBackend();
 
@@ -4928,7 +4944,7 @@
         if (currentCasePage < totalPages) { currentCasePage++; renderCaseRegistry(); }
       });
       document.getElementById('btnResetCaseFilters').addEventListener('click', () => {
-        resetCaseFiltersSilent();
+      resetCaseFiltersSilent();
         renderCaseRegistry();
       });
       document.getElementById('btnExportFilteredCasesCsv').addEventListener('click', () => {

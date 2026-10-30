@@ -1,4 +1,5 @@
 import os
+import tempfile
 from typing import List
 
 try:
@@ -15,10 +16,13 @@ except Exception:
 class Settings:
     PROJECT_NAME: str = "AICTE Integrated Institution Complaint Monitoring & Status Dashboard (IICM-SD)"
     VERSION: str = "3.1.0"
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL",
-        f"sqlite:///{os.path.abspath(os.path.join(os.path.dirname(__file__), '../../aicte_iicm.db'))}"
+    _is_serverless: bool = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+    _default_db_path: str = (
+        f"sqlite:///{os.path.join(tempfile.gettempdir(), 'aicte_iicm.db').replace(os.sep, '/')}"
+        if _is_serverless
+        else f"sqlite:///{os.path.abspath(os.path.join(os.path.dirname(__file__), '../../aicte_iicm.db'))}"
     )
+    DATABASE_URL: str = os.getenv("DATABASE_URL", _default_db_path)
     JWT_SECRET: str = os.getenv("JWT_SECRET", "aicte-mic-iicm-production-hmac-sha256-secret-2026")
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRY_HOURS: int = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
@@ -32,10 +36,12 @@ class Settings:
     SLA_WARNING_DAYS: int = int(os.getenv("SLA_WARNING_DAYS", "5"))
     PENDING_REMINDER_DAYS: int = int(os.getenv("PENDING_REMINDER_DAYS", "7"))
 
-    UPLOAD_DIR: str = os.getenv(
-        "UPLOAD_DIR",
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../uploads"))
+    _default_upload_dir: str = (
+        os.path.join(tempfile.gettempdir(), "uploads")
+        if _is_serverless
+        else os.path.abspath(os.path.join(os.path.dirname(__file__), "../../uploads"))
     )
+    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", _default_upload_dir)
     MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))) # 10 MB
 
     # Gemini AI Chatbot Settings (Official google-genai SDK)
@@ -52,7 +58,7 @@ class Settings:
     def allowed_origins(self) -> List[str]:
         raw = os.getenv(
             "ALLOWED_ORIGINS",
-            "http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000,http://localhost:5173,http://localhost:8000"
+            "http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000,http://localhost:5173,http://localhost:8000,https://localhost:8000"
         )
         return [o.strip() for o in raw.split(",") if o.strip()]
 
